@@ -226,6 +226,10 @@ def process_image_with_auto_sizing(image_data, text_config):
         pos_x = float(text_config.get('posX', preset['default_position']['x']))
         pos_y = float(text_config.get('posY', preset['default_position']['y']))
         
+        # Дополнительные параметры для улучшения качества
+        outline_width = int(text_config.get('outlineWidth', 3))
+        outline_color = tuple(text_config.get('outlineColor', [0, 0, 0, 255]))
+        
         font = load_font(font_name, font_size)
         
         # Обрабатываем многострочный текст
@@ -250,15 +254,24 @@ def process_image_with_auto_sizing(image_data, text_config):
         x = int((width * pos_x) / 100)
         y = int((height * pos_y) / 100)
         
+        print(f"DEBUG: Image size: {width}x{height}")
+        print(f"DEBUG: Text position: x={x}, y={y} (from {pos_x}%, {pos_y}%)")
+        print(f"DEBUG: Font size: {font_size}")
+        print(f"DEBUG: Text lines: {len(lines)}")
+        print(f"DEBUG: Max text width: {max_width}")
+        print(f"DEBUG: Total text height: {total_height}")
+        
         # Фон для текста
         if not transparent_bg and text.strip():
             padding = preset['padding']
             bg_bbox = (
-                x - max_width//2 - padding,
-                y - int(total_height//2) - padding//2,
-                x + max_width//2 + padding,
-                y + int(total_height//2) + padding//2
+                max(0, x - max_width//2 - padding),
+                max(0, y - int(total_height//2) - padding//2),
+                min(width, x + max_width//2 + padding),
+                min(height, y + int(total_height//2) + padding//2)
             )
+            
+            print(f"DEBUG: Background bbox: {bg_bbox}")
             
             overlay = Image.new('RGBA', image.size, (0, 0, 0, 0))
             overlay_draw = ImageDraw.Draw(overlay)
@@ -267,9 +280,10 @@ def process_image_with_auto_sizing(image_data, text_config):
             image = Image.alpha_composite(image, overlay)
             draw = ImageDraw.Draw(image)
         
-        # Рисуем текст
+        # Рисуем текст с улучшенной обводкой
         current_y = y - int(total_height//2)
-        shadow_offset = max(2, font_size // 15)  # Увеличили тень
+        
+        print(f"DEBUG: Starting text drawing at y={current_y}")
         
         for i, line in enumerate(lines):
             if not line.strip():
@@ -279,27 +293,36 @@ def process_image_with_auto_sizing(image_data, text_config):
             line_width = line_widths[i]
             line_x = x - line_width//2
             
+            print(f"DEBUG: Drawing line '{line}' at position ({line_x}, {current_y})")
+            
             try:
-                # Двойная тень для лучшей видимости
-                shadow_color = (0, 0, 0, 200) if len(font_color) > 3 else (0, 0, 0)
+                # Убедимся что координаты в пределах изображения
+                if line_x < 0 or current_y < 0 or line_x > width or current_y > height:
+                    print(f"WARNING: Text position outside image bounds: ({line_x}, {current_y})")
                 
-                # Большая тень
-                draw.text(
-                    (line_x + shadow_offset + 1, current_y + shadow_offset + 1), 
-                    line, font=font, fill=shadow_color
-                )
-                # Малая тень
-                draw.text(
-                    (line_x + 1, current_y + 1), 
-                    line, font=font, fill=shadow_color
-                )
+                # Простая обводка (если нужна)
+                if outline_width > 0:
+                    for adj_x in range(-outline_width, outline_width + 1):
+                        for adj_y in range(-outline_width, outline_width + 1):
+                            if adj_x == 0 and adj_y == 0:
+                                continue
+                            draw.text(
+                                (line_x + adj_x, current_y + adj_y), 
+                                line, font=font, fill=outline_color[:3]  # Только RGB
+                            )
                 
-                # Основной текст
-                draw.text((line_x, current_y), line, font=font, fill=font_color)
-            except (UnicodeError, OSError) as e:
-                print(f"Ошибка рисования текста: {e}")
-                # Пропускаем проблемную строку
-                pass
+                # Основной текст - ОБЯЗАТЕЛЬНО рисуем
+                draw.text((line_x, current_y), line, font=font, fill=font_color[:3])  # Только RGB
+                print(f"DEBUG: Text drawn successfully at ({line_x}, {current_y})")
+                
+            except Exception as e:
+                print(f"ERROR drawing text: {e}")
+                # Попробуем без обводки
+                try:
+                    draw.text((line_x, current_y), line, font=font, fill=(255, 255, 255))
+                    print(f"DEBUG: Fallback text drawn")
+                except Exception as e2:
+                    print(f"ERROR even with fallback: {e2}")
                 
             current_y += line_heights[i] + int(font_size * 0.2)
         
@@ -502,6 +525,73 @@ def health():
         "unicode_support": True,
         "version": "2.1.0"
     })
+
+@app.route('/simple-overlay', methods=['POST'])
+def simple_overlay():
+    """Простое наложение текста без сложной логики"""
+    try:
+        data = request.get_json(force=True)
+        
+        # Декодируем изображение
+        image_data = data['image']
+        if image_data.startswith('data:image'):
+            header, encoded = image_data.split(',', 1)
+            image_bytes = base64.b64decode(encoded)
+        else:
+            image_bytes = base64.b64decode(image_data)
+        
+        from PIL import ImageFile
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
+        
+        image = Image.open(io.BytesIO(image_bytes))
+        if image.mode != 'RGBA':
+            image = image.convert('RGBA')
+        
+        draw = ImageDraw.Draw(image)
+        width, height = image.size
+        
+        # Простые параметры
+        text = data.get('text', 'TEST TEXT')
+        font_size = data.get('fontSize', 48)
+        x = data.get('x', width // 2)
+        y = data.get('y', height // 2)
+        
+        # Загружаем шрифт
+        font = load_font('arial', font_size)
+        
+        # Рисуем простой белый текст с черной обводкой
+        # Черная обводка
+        for adj in [(-2,-2), (-2,2), (2,-2), (2,2), (-2,0), (2,0), (0,-2), (0,2)]:
+            draw.text((x + adj[0], y + adj[1]), text, font=font, fill=(0, 0, 0))
+        
+        # Белый текст
+        draw.text((x, y), text, font=font, fill=(255, 255, 255))
+        
+        # Конвертируем для сохранения
+        if image.mode == 'RGBA':
+            background = Image.new('RGB', image.size, (255, 255, 255))
+            background.paste(image, mask=image.split()[-1])
+            image = background
+        
+        output_buffer = io.BytesIO()
+        image.save(output_buffer, format='PNG', quality=95)
+        output_buffer.seek(0)
+        
+        result_base64 = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
+        
+        return jsonify({
+            "success": True,
+            "image": result_base64,
+            "debug": {
+                "image_size": f"{width}x{height}",
+                "text_position": f"({x}, {y})",
+                "font_size": font_size,
+                "text": text
+            }
+        })
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/generate-test-image', methods=['GET'])
 def generate_test_image():
