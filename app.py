@@ -269,7 +269,7 @@ def process_image_with_auto_sizing(image_data, text_config):
         
         # Рисуем текст
         current_y = y - int(total_height//2)
-        shadow_offset = max(1, font_size // 20)
+        shadow_offset = max(2, font_size // 15)  # Увеличили тень
         
         for i, line in enumerate(lines):
             if not line.strip():
@@ -280,12 +280,19 @@ def process_image_with_auto_sizing(image_data, text_config):
             line_x = x - line_width//2
             
             try:
-                # Тень
-                if not transparent_bg:
-                    draw.text(
-                        (line_x + shadow_offset, current_y + shadow_offset), 
-                        line, font=font, fill=(0, 0, 0, 100)
-                    )
+                # Двойная тень для лучшей видимости
+                shadow_color = (0, 0, 0, 200) if len(font_color) > 3 else (0, 0, 0)
+                
+                # Большая тень
+                draw.text(
+                    (line_x + shadow_offset + 1, current_y + shadow_offset + 1), 
+                    line, font=font, fill=shadow_color
+                )
+                # Малая тень
+                draw.text(
+                    (line_x + 1, current_y + 1), 
+                    line, font=font, fill=shadow_color
+                )
                 
                 # Основной текст
                 draw.text((line_x, current_y), line, font=font, fill=font_color)
@@ -495,6 +502,67 @@ def health():
         "unicode_support": True,
         "version": "2.1.0"
     })
+
+@app.route('/generate-test-image', methods=['GET'])
+def generate_test_image():
+    """Генерирует тестовое изображение 1024x1024"""
+    try:
+        # Создаем изображение 1024x1024
+        width, height = 1024, 1024
+        image = Image.new('RGB', (width, height), color='#4A90E2')  # Синий фон
+        draw = ImageDraw.Draw(image)
+        
+        # Добавляем градиент
+        for y in range(height):
+            alpha = int(255 * (y / height))
+            color = (74, 144, 226, alpha)
+            draw.line([(0, y), (width, y)], fill=color[:3])
+        
+        # Добавляем сетку
+        grid_size = 128
+        for x in range(0, width, grid_size):
+            draw.line([(x, 0), (x, height)], fill='white', width=2)
+        for y in range(0, height, grid_size):
+            draw.line([(0, y), (width, y)], fill='white', width=2)
+        
+        # Добавляем центральный круг
+        center_x, center_y = width // 2, height // 2
+        radius = 200
+        draw.ellipse([
+            center_x - radius, center_y - radius,
+            center_x + radius, center_y + radius
+        ], fill='white', outline='black', width=4)
+        
+        # Добавляем текст с размерами
+        font = load_font('arial', 48)
+        size_text = f"{width}x{height}"
+        bbox = draw.textbbox((0, 0), size_text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_x = center_x - text_width // 2
+        text_y = center_y - 24
+        
+        # Тень
+        draw.text((text_x + 2, text_y + 2), size_text, font=font, fill='black')
+        # Основной текст
+        draw.text((text_x, text_y), size_text, font=font, fill='white')
+        
+        # Конвертируем в base64
+        output_buffer = io.BytesIO()
+        image.save(output_buffer, format='PNG', quality=95)
+        output_buffer.seek(0)
+        
+        result_base64 = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
+        
+        return jsonify({
+            "success": True,
+            "image": result_base64,
+            "image_with_prefix": f"data:image/png;base64,{result_base64}",
+            "size": f"{width}x{height}",
+            "message": "Тестовое изображение создано"
+        })
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/overlay-raw', methods=['POST'])
 def overlay_text_raw():
