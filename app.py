@@ -544,34 +544,62 @@ def simple_overlay():
         ImageFile.LOAD_TRUNCATED_IMAGES = True
         
         image = Image.open(io.BytesIO(image_bytes))
-        if image.mode != 'RGBA':
-            image = image.convert('RGBA')
+        # Конвертируем в RGB для простоты
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
         
         draw = ImageDraw.Draw(image)
         width, height = image.size
         
         # Простые параметры
-        text = data.get('text', 'TEST TEXT')
-        font_size = data.get('fontSize', 48)
+        text = data.get('text', 'HELLO WORLD')
+        font_size = data.get('fontSize', min(width, height) // 8)  # Адаптивный размер
+        
+        # Позиция по умолчанию - центр верхней части
         x = data.get('x', width // 2)
-        y = data.get('y', height // 2)
+        y = data.get('y', height // 4)
+        
+        print(f"Drawing text '{text}' at ({x}, {y}) with size {font_size} on {width}x{height} image")
         
         # Загружаем шрифт
-        font = load_font('arial', font_size)
+        try:
+            font = load_font('arial', font_size)
+        except:
+            font = ImageFont.load_default()
         
-        # Рисуем простой белый текст с черной обводкой
-        # Черная обводка
-        for adj in [(-2,-2), (-2,2), (2,-2), (2,2), (-2,0), (2,0), (0,-2), (0,2)]:
-            draw.text((x + adj[0], y + adj[1]), text, font=font, fill=(0, 0, 0))
+        # Получаем размеры текста для центрирования
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
         
-        # Белый текст
-        draw.text((x, y), text, font=font, fill=(255, 255, 255))
+        # Центрируем текст
+        final_x = x - text_width // 2
+        final_y = y - text_height // 2
         
-        # Конвертируем для сохранения
-        if image.mode == 'RGBA':
-            background = Image.new('RGB', image.size, (255, 255, 255))
-            background.paste(image, mask=image.split()[-1])
-            image = background
+        # Убеждаемся что текст в границах изображения
+        final_x = max(10, min(final_x, width - text_width - 10))
+        final_y = max(10, min(final_y, height - text_height - 10))
+        
+        print(f"Final position: ({final_x}, {final_y}), text size: {text_width}x{text_height}")
+        
+        # Рисуем ОЧЕНЬ контрастный текст
+        outline_size = max(3, font_size // 16)
+        
+        # Толстая черная обводка
+        for dx in range(-outline_size, outline_size + 1):
+            for dy in range(-outline_size, outline_size + 1):
+                if dx != 0 or dy != 0:
+                    draw.text((final_x + dx, final_y + dy), text, font=font, fill=(0, 0, 0))
+        
+        # Яркий белый текст поверх
+        draw.text((final_x, final_y), text, font=font, fill=(255, 255, 255))
+        
+        # Добавляем красный прямоугольник для отладки (чтобы точно видеть где текст)
+        debug_rect = [
+            final_x - 5, final_y - 5,
+            final_x + text_width + 5, final_y + text_height + 5
+        ]
+        draw.rectangle(debug_rect, outline=(255, 0, 0), width=3)
         
         output_buffer = io.BytesIO()
         image.save(output_buffer, format='PNG', quality=95)
@@ -584,13 +612,15 @@ def simple_overlay():
             "image": result_base64,
             "debug": {
                 "image_size": f"{width}x{height}",
-                "text_position": f"({x}, {y})",
+                "text_position": f"({final_x}, {final_y})",
+                "text_size": f"{text_width}x{text_height}",
                 "font_size": font_size,
                 "text": text
             }
         })
         
     except Exception as e:
+        print(f"Error in simple_overlay: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/generate-test-image', methods=['GET'])
