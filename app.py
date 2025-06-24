@@ -551,9 +551,17 @@ def simple_overlay():
         draw = ImageDraw.Draw(image)
         width, height = image.size
         
-        # Простые параметры
-        text = data.get('text', 'HELLO WORLD')
-        font_size = data.get('fontSize', min(width, height) // 8)  # Адаптивный размер
+        # Простые параметры с безопасной обработкой Unicode
+        text = str(data.get('text', 'HELLO WORLD'))
+        
+        # Очищаем текст от проблемных символов
+        try:
+            # Проверяем что текст можно корректно обработать
+            text.encode('utf-8')
+        except:
+            text = 'TEXT_ERROR'
+        
+        font_size = data.get('fontSize', min(width, height) // 8)
         
         # Позиция по умолчанию - центр верхней части
         x = data.get('x', width // 2)
@@ -561,43 +569,79 @@ def simple_overlay():
         
         print(f"Drawing text '{text}' at ({x}, {y}) with size {font_size} on {width}x{height} image")
         
-        # Загружаем шрифт
+        # Загружаем шрифт с поддержкой Unicode
         try:
-            font = load_font('arial', font_size)
-        except:
+            # Пробуем системные шрифты с Unicode поддержкой
+            unicode_fonts = [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
+            ]
+            
+            font = None
+            for font_path in unicode_fonts:
+                if os.path.exists(font_path):
+                    try:
+                        font = ImageFont.truetype(font_path, font_size)
+                        # Тестируем шрифт с нашим текстом
+                        test_bbox = draw.textbbox((0, 0), text, font=font)
+                        break
+                    except:
+                        continue
+            
+            if font is None:
+                font = ImageFont.load_default()
+                
+        except Exception as e:
+            print(f"Font loading error: {e}")
             font = ImageFont.load_default()
         
         # Получаем размеры текста для центрирования
-        bbox = draw.textbbox((0, 0), text, font=font)
-        text_width = bbox[2] - bbox[0]
-        text_height = bbox[3] - bbox[1]
+        try:
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+        except:
+            # Если не можем получить размеры, используем приблизительные
+            text_width = len(text) * font_size * 0.6
+            text_height = font_size
         
         # Центрируем текст
-        final_x = x - text_width // 2
-        final_y = y - text_height // 2
+        final_x = int(x - text_width // 2)
+        final_y = int(y - text_height // 2)
         
         # Убеждаемся что текст в границах изображения
-        final_x = max(10, min(final_x, width - text_width - 10))
-        final_y = max(10, min(final_y, height - text_height - 10))
+        final_x = max(10, min(final_x, width - int(text_width) - 10))
+        final_y = max(10, min(final_y, height - int(text_height) - 10))
         
         print(f"Final position: ({final_x}, {final_y}), text size: {text_width}x{text_height}")
         
         # Рисуем ОЧЕНЬ контрастный текст
         outline_size = max(3, font_size // 16)
         
-        # Толстая черная обводка
-        for dx in range(-outline_size, outline_size + 1):
-            for dy in range(-outline_size, outline_size + 1):
-                if dx != 0 or dy != 0:
-                    draw.text((final_x + dx, final_y + dy), text, font=font, fill=(0, 0, 0))
+        try:
+            # Толстая черная обводка
+            for dx in range(-outline_size, outline_size + 1):
+                for dy in range(-outline_size, outline_size + 1):
+                    if dx != 0 or dy != 0:
+                        draw.text((final_x + dx, final_y + dy), text, font=font, fill=(0, 0, 0))
+            
+            # Яркий белый текст поверх
+            draw.text((final_x, final_y), text, font=font, fill=(255, 255, 255))
+            
+        except Exception as e:
+            print(f"Text drawing error: {e}")
+            # Fallback - рисуем простой текст
+            try:
+                draw.text((final_x, final_y), "TEXT", font=font, fill=(255, 255, 255))
+            except:
+                # Последний fallback - рисуем прямоугольник
+                draw.rectangle([final_x, final_y, final_x + 100, final_y + 30], fill=(255, 255, 255))
         
-        # Яркий белый текст поверх
-        draw.text((final_x, final_y), text, font=font, fill=(255, 255, 255))
-        
-        # Добавляем красный прямоугольник для отладки (чтобы точно видеть где текст)
+        # Добавляем красный прямоугольник для отладки
         debug_rect = [
             final_x - 5, final_y - 5,
-            final_x + text_width + 5, final_y + text_height + 5
+            final_x + int(text_width) + 5, final_y + int(text_height) + 5
         ]
         draw.rectangle(debug_rect, outline=(255, 0, 0), width=3)
         
@@ -615,12 +659,78 @@ def simple_overlay():
                 "text_position": f"({final_x}, {final_y})",
                 "text_size": f"{text_width}x{text_height}",
                 "font_size": font_size,
-                "text": text
+                "text": text,
+                "text_length": len(text)
             }
         })
         
     except Exception as e:
         print(f"Error in simple_overlay: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/create-text-image', methods=['POST'])
+def create_text_image():
+    """Создает новое изображение с текстом"""
+    try:
+        data = request.get_json(force=True)
+        
+        width = data.get('width', 800)
+        height = data.get('height', 600)
+        text = str(data.get('text', 'HELLO WORLD'))
+        font_size = data.get('fontSize', 48)
+        bg_color = tuple(data.get('bgColor', [70, 130, 180]))  # Steel blue
+        text_color = tuple(data.get('textColor', [255, 255, 255]))  # White
+        
+        # Создаем изображение
+        image = Image.new('RGB', (width, height), bg_color)
+        draw = ImageDraw.Draw(image)
+        
+        # Загружаем шрифт
+        try:
+            font = load_font('arial', font_size)
+        except:
+            font = ImageFont.load_default()
+        
+        # Получаем размеры текста
+        try:
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+        except:
+            text_width = len(text) * font_size * 0.6
+            text_height = font_size
+        
+        # Центрируем текст
+        x = (width - text_width) // 2
+        y = (height - text_height) // 2
+        
+        # Рисуем текст с обводкой
+        outline_size = 2
+        for dx in range(-outline_size, outline_size + 1):
+            for dy in range(-outline_size, outline_size + 1):
+                if dx != 0 or dy != 0:
+                    draw.text((x + dx, y + dy), text, font=font, fill=(0, 0, 0))
+        
+        draw.text((x, y), text, font=font, fill=text_color)
+        
+        # Конвертируем в base64
+        output_buffer = io.BytesIO()
+        image.save(output_buffer, format='PNG', quality=95)
+        output_buffer.seek(0)
+        
+        result_base64 = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
+        
+        return jsonify({
+            "success": True,
+            "image": result_base64,
+            "debug": {
+                "image_size": f"{width}x{height}",
+                "text": text,
+                "font_size": font_size
+            }
+        })
+        
+    except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/generate-test-image', methods=['GET'])
