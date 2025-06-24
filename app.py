@@ -173,9 +173,8 @@ def process_image_with_auto_sizing(image_data, text_config):
         
         # Проверяем и очищаем текст от проблемных символов
         try:
-            # Нормализуем Unicode
-            import unicodedata
-            text = unicodedata.normalize('NFC', text)
+            # Простая нормализация без внешних библиотек
+            text = text.encode('utf-8').decode('utf-8')
         except:
             pass
         
