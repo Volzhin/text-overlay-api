@@ -31,6 +31,32 @@ GOOGLE_FONTS_CYRILLIC = {
     "nunito": "https://fonts.gstatic.com/s/nunito/v26/XRXI3I6Li01BKofAjsOUb-vISTs.ttf"
 }
 
+def test_font_with_cyrillic(font, test_text="Тест"):
+    """Проверяет может ли шрифт отобразить кириллицу"""
+    try:
+        # Создаем тестовое изображение
+        test_img = Image.new('RGB', (200, 100), color=(255, 255, 255))
+        test_draw = ImageDraw.Draw(test_img)
+        
+        # Пробуем нарисовать кириллицу
+        test_draw.text((10, 10), test_text, font=font, fill=(0, 0, 0))
+        
+        # Проверяем что текст действительно нарисовался
+        # Простая проверка - есть ли черные пиксели
+        pixels = list(test_img.getdata())
+        has_black_pixels = any(pixel != (255, 255, 255) for pixel in pixels)
+        
+        if has_black_pixels:
+            print(f"Font passed cyrillic test")
+            return True
+        else:
+            print(f"Font failed cyrillic test - no black pixels")
+            return False
+            
+    except Exception as e:
+        print(f"Font failed cyrillic test - exception: {e}")
+        return False
+
 def download_google_font(font_name, font_size):
     """Скачивает Google Font если нужен"""
     if not font_name:
@@ -66,8 +92,15 @@ def download_google_font(font_name, font_size):
         # Загружаем шрифт
         try:
             font = ImageFont.truetype(str(font_path), font_size)
-            print(f"Loaded Google Font: {font_name}")
-            return font
+            
+            # ВАЖНО: Проверяем что шрифт может отображать кириллицу
+            if test_font_with_cyrillic(font):
+                print(f"Loaded Google Font with Cyrillic: {font_name}")
+                return font
+            else:
+                print(f"Google Font {font_name} doesn't support Cyrillic")
+                return None
+                
         except Exception as e:
             print(f"Font load error: {e}")
             return None
@@ -88,11 +121,15 @@ def get_safe_font(font_size):
         if os.path.exists(font_path):
             try:
                 font = ImageFont.truetype(font_path, font_size)
-                # Простой тест
-                test_img = Image.new('RGB', (100, 100))
-                test_draw = ImageDraw.Draw(test_img)
-                test_draw.text((10, 10), "Test", font=font, fill=(255, 255, 255))
-                return font
+                
+                # Проверяем поддержку кириллицы
+                if test_font_with_cyrillic(font):
+                    print(f"Using system font with Cyrillic: {font_path}")
+                    return font
+                else:
+                    print(f"System font {font_path} doesn't support Cyrillic")
+                    continue
+                    
             except:
                 continue
     
@@ -215,22 +252,25 @@ def overlay_text():
         display_text = original_text
         font_works = True
         
-        # Проверяем работает ли шрифт с кириллицей
-        if font:
-            try:
-                test_bbox = draw.textbbox((0, 0), original_text, font=font)
-                if any(ord(c) > 127 for c in original_text):  # есть не-ASCII символы
-                    # Пробуем нарисовать кириллицу
-                    test_img = Image.new('RGB', (100, 100))
-                    test_draw = ImageDraw.Draw(test_img)
-                    test_draw.text((10, 10), original_text, font=font, fill=(255, 255, 255))
-            except:
+        # Проверяем есть ли кириллица в тексте
+        has_cyrillic = any(ord(c) > 127 and ord(c) < 1200 for c in original_text)
+        
+        if has_cyrillic:
+            print(f"Text contains Cyrillic characters")
+            
+            # Если есть кириллица, проверяем что шрифт может её отобразить
+            if font and not test_font_with_cyrillic(font, original_text):
+                print("Font cannot display Cyrillic, using transliteration")
                 font_works = False
                 display_text = transliterate(original_text)
-                print(f"Font failed, using transliteration: {display_text}")
+            elif not font:
+                print("No font available, using transliteration")
+                font_works = False
+                display_text = transliterate(original_text)
         else:
-            display_text = transliterate(original_text)
-            print(f"No font, using transliteration: {display_text}")
+            print(f"Text is Latin/ASCII")
+        
+        print(f"Final display text: '{display_text}'")
         
         # Разбиваем текст на строки
         max_text_width = width - (width // 10)  # 90% ширины
@@ -340,6 +380,84 @@ def overlay_text():
         
     except Exception as e:
         print(f"Error: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/test-cyrillic', methods=['POST'])
+def test_cyrillic():
+    """Тестирует отображение кириллицы"""
+    try:
+        data = request.get_json(force=True)
+        font_name = data.get('fontFamily', None)
+        test_text = data.get('text', 'Тест кириллицы АБВ 123')
+        font_size = 48
+        
+        # Создаем тестовое изображение
+        test_img = Image.new('RGB', (600, 200), color=(255, 255, 255))
+        test_draw = ImageDraw.Draw(test_img)
+        
+        results = {}
+        y_position = 20
+        
+        # Тестируем Google Font
+        if font_name:
+            google_font = download_google_font(font_name, font_size)
+            if google_font:
+                cyrillic_works = test_font_with_cyrillic(google_font, test_text)
+                results[f"google_{font_name}"] = cyrillic_works
+                
+                try:
+                    test_draw.text((20, y_position), f"Google {font_name}: {test_text}", 
+                                 font=google_font, fill=(0, 0, 0))
+                    y_position += 50
+                except:
+                    test_draw.text((20, y_position), f"Google {font_name}: ERROR", 
+                                 fill=(255, 0, 0))
+                    y_position += 50
+        
+        # Тестируем системный шрифт
+        system_font = get_safe_font(font_size)
+        if system_font:
+            cyrillic_works = test_font_with_cyrillic(system_font, test_text)
+            results["system_font"] = cyrillic_works
+            
+            try:
+                test_draw.text((20, y_position), f"System: {test_text}", 
+                             font=system_font, fill=(0, 0, 0))
+                y_position += 50
+            except:
+                test_draw.text((20, y_position), f"System: ERROR", fill=(255, 0, 0))
+                y_position += 50
+        
+        # Тестируем без шрифта
+        try:
+            test_draw.text((20, y_position), f"Default: {test_text}", fill=(0, 0, 0))
+            y_position += 50
+            results["default_font"] = True
+        except:
+            test_draw.text((20, y_position), f"Default: ERROR", fill=(255, 0, 0))
+            results["default_font"] = False
+            y_position += 50
+        
+        # Транслитерация
+        transliterated = transliterate(test_text)
+        test_draw.text((20, y_position), f"Transliterated: {transliterated}", fill=(0, 0, 0))
+        results["transliteration"] = transliterated
+        
+        # Сохраняем результат
+        output_buffer = io.BytesIO()
+        test_img.save(output_buffer, format='PNG')
+        output_buffer.seek(0)
+        
+        result_base64 = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
+        
+        return jsonify({
+            "success": True,
+            "image": result_base64,
+            "test_results": results,
+            "test_text": test_text
+        })
+        
+    except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/fonts', methods=['GET'])
