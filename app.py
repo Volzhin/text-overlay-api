@@ -323,7 +323,18 @@ def home():
 def overlay_text():
     """Основной endpoint наложения текста"""
     try:
-        data = request.get_json(force=True)
+        # Гибкое получение JSON данных
+        if request.is_json:
+            data = request.get_json()
+        elif request.content_type and 'application/json' in request.content_type:
+            data = request.get_json(force=True)
+        else:
+            # Попытка парсинга как JSON даже если Content-Type неправильный
+            try:
+                import json
+                data = json.loads(request.data.decode('utf-8'))
+            except:
+                return jsonify({"error": "Неверный формат данных. Ожидается JSON."}), 400
         
         if not data or 'image' not in data:
             return jsonify({"error": "Поле 'image' обязательно"}), 400
