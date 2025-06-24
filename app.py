@@ -158,8 +158,27 @@ def process_image_with_auto_sizing(image_data, text_config):
         else:
             image_bytes = image_data
         
-        image = Image.open(io.BytesIO(image_bytes))
+        # Проверяем размер изображения
+        if len(image_bytes) < 1000:  # Минимум 1KB
+            raise Exception("Изображение слишком маленькое. Минимальный размер: 1KB")
+        
+        # Открываем изображение с обработкой ошибок
+        try:
+            from PIL import ImageFile
+            ImageFile.LOAD_TRUNCATED_IMAGES = True  # Разрешаем загрузку поврежденных изображений
+            
+            image = Image.open(io.BytesIO(image_bytes))
+            image.load()  # Принудительная загрузка для проверки
+            
+        except Exception as img_error:
+            raise Exception(f"Не удается открыть изображение: {str(img_error)}. Проверьте корректность base64 данных")
+        
         width, height = image.size
+        
+        # Проверяем минимальные размеры
+        if width < 10 or height < 10:
+            raise Exception(f"Изображение слишком маленькое: {width}x{height}. Минимум: 10x10 пикселей")
+        
         preset = get_size_preset(width, height)
         
         # Конвертируем в RGBA
