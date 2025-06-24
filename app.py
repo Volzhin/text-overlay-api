@@ -772,6 +772,232 @@ def get_safe_font(font_size):
     # Fallback к дефолтному
     return ImageFont.load_default()
 
+def draw_text_as_shapes(draw, text, x, y, size, color):
+    """Рисует текст как простые геометрические фигуры (fallback для проблем с шрифтами)"""
+    char_width = size // 2
+    char_height = size
+    current_x = x
+    
+    for char in text.upper():
+        if char == ' ':
+            current_x += char_width
+            continue
+        elif char == 'А' or char == 'A':
+            # Рисуем букву А как треугольник с перекладиной
+            points = [
+                (current_x + char_width//2, y),
+                (current_x, y + char_height),
+                (current_x + char_width, y + char_height)
+            ]
+            draw.polygon(points, outline=color, width=3)
+            draw.line([
+                (current_x + char_width//4, y + char_height//2),
+                (current_x + 3*char_width//4, y + char_height//2)
+            ], fill=color, width=3)
+        elif char in 'ВBEЁE':
+            # Прямоугольник с перекладинами
+            draw.rectangle([current_x, y, current_x + char_width, y + char_height], outline=color, width=3)
+            draw.line([current_x, y + char_height//3, current_x + char_width//2, y + char_height//3], fill=color, width=3)
+            draw.line([current_x, y + 2*char_height//3, current_x + char_width//2, y + 2*char_height//3], fill=color, width=3)
+        elif char in 'РP':
+            # Буква Р
+            draw.line([current_x, y, current_x, y + char_height], fill=color, width=3)
+            draw.line([current_x, y, current_x + char_width, y], fill=color, width=3)
+            draw.line([current_x, y + char_height//2, current_x + char_width, y + char_height//2], fill=color, width=3)
+            draw.line([current_x + char_width, y, current_x + char_width, y + char_height//2], fill=color, width=3)
+        elif char in 'ИI':
+            # Буква И
+            draw.line([current_x, y, current_x, y + char_height], fill=color, width=3)
+            draw.line([current_x + char_width, y, current_x + char_width, y + char_height], fill=color, width=3)
+            draw.line([current_x, y + char_height, current_x + char_width, y], fill=color, width=3)
+        elif char in 'ВТT':
+            # Буква Т
+            draw.line([current_x, y, current_x + char_width, y], fill=color, width=3)
+            draw.line([current_x + char_width//2, y, current_x + char_width//2, y + char_height], fill=color, width=3)
+        elif char in 'ОO':
+            # Круг
+            draw.ellipse([current_x, y, current_x + char_width, y + char_height], outline=color, width=3)
+        else:
+            # Для остальных символов - простой прямоугольник
+            draw.rectangle([current_x, y, current_x + char_width//2, y + char_height], fill=color)
+        
+        current_x += char_width + 5
+
+@app.route('/robust-overlay', methods=['POST'])
+def robust_overlay():
+    """Максимально надежное наложение текста"""
+    try:
+        data = request.get_json(force=True)
+        
+        # Декодируем изображение
+        image_data = data['image']
+        if image_data.startswith('data:image'):
+            header, encoded = image_data.split(',', 1)
+            image_bytes = base64.b64decode(encoded)
+        else:
+            image_bytes = base64.b64decode(image_data)
+        
+        from PIL import ImageFile
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
+        
+        image = Image.open(io.BytesIO(image_bytes))
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        draw = ImageDraw.Draw(image)
+        width, height = image.size
+        
+        text = str(data.get('text', 'ТЕКСТ'))
+        font_size = data.get('fontSize', min(width, height) // 10)
+        position = data.get('position', 'bottom')
+        
+        # Цвета
+        text_color = tuple(data.get('textColor', [255, 255, 255]))[:3]
+        bg_color = tuple(data.get('backgroundColor', [0, 0, 0, 180]))
+        
+        # Вычисляем позицию
+        text_width = len(text) * (font_size // 2 + 5)
+        text_height = font_size
+        margin = width // 20
+        
+        if position == 'top':
+            x = (width - text_width) // 2
+            y = margin
+        elif position == 'bottom':
+            x = (width - text_width) // 2
+            y = height - margin - text_height - 20
+        else:  # center
+            x = (width - text_width) // 2
+            y = (height - text_height) // 2
+        
+        # Рисуем фон
+        padding = 20
+        bg_rect = [
+            max(0, x - padding),
+            max(0, y - padding),
+            min(width, x + text_width + padding),
+            min(height, y + text_height + padding)
+        ]
+        
+        # Создаем полупрозрачный фон
+        overlay = Image.new('RGBA', image.size, (0, 0, 0, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+        overlay_draw.rounded_rectangle(bg_rect, radius=10, fill=bg_color)
+        
+        # Накладываем фон
+        if image.mode != 'RGBA':
+            image = image.convert('RGBA')
+        image = Image.alpha_composite(image, overlay)
+        
+        # Возвращаем в RGB
+        rgb_image = Image.new('RGB', image.size, (255, 255, 255))
+        if image.mode == 'RGBA':
+            rgb_image.paste(image, mask=image.split()[-1])
+        image = rgb_image
+        draw = ImageDraw.Draw(image)
+        
+        # Пробуем разные способы отрисовки текста
+        success = False
+        
+        # Способ 1: Обычные шрифты
+        try:
+            font = get_safe_font(font_size)
+            draw.text((x, y), text, font=font, fill=text_color)
+            success = True
+            print("Method 1 (normal font) succeeded")
+        except Exception as e:
+            print(f"Method 1 failed: {e}")
+        
+        # Способ 2: Дефолтный шрифт
+        if not success:
+            try:
+                default_font = ImageFont.load_default()
+                draw.text((x, y), text, font=default_font, fill=text_color)
+                success = True
+                print("Method 2 (default font) succeeded")
+            except Exception as e:
+                print(f"Method 2 failed: {e}")
+        
+        # Способ 3: Без шрифта вообще
+        if not success:
+            try:
+                draw.text((x, y), text, fill=text_color)
+                success = True
+                print("Method 3 (no font) succeeded")
+            except Exception as e:
+                print(f"Method 3 failed: {e}")
+        
+        # Способ 4: Транслитерация в латиницу
+        if not success:
+            try:
+                # Простая транслитерация
+                translit_map = {
+                    'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e',
+                    'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+                    'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+                    'ф': 'f', 'х': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sch',
+                    'ы': 'y', 'э': 'e', 'ю': 'yu', 'я': 'ya', ' ': ' '
+                }
+                
+                translit_text = ''
+                for char in text.lower():
+                    translit_text += translit_map.get(char, char)
+                
+                draw.text((x, y), translit_text.upper(), fill=text_color)
+                success = True
+                print(f"Method 4 (transliteration) succeeded: {translit_text}")
+            except Exception as e:
+                print(f"Method 4 failed: {e}")
+        
+        # Способ 5: Геометрические фигуры
+        if not success:
+            try:
+                draw_text_as_shapes(draw, text, x, y, font_size, text_color)
+                success = True
+                print("Method 5 (shapes) succeeded")
+            except Exception as e:
+                print(f"Method 5 failed: {e}")
+        
+        # Способ 6: Простые прямоугольники как буквы
+        if not success:
+            try:
+                char_width = font_size // 2
+                current_x = x
+                for i, char in enumerate(text):
+                    if char != ' ':
+                        draw.rectangle([
+                            current_x, y,
+                            current_x + char_width, y + font_size
+                        ], fill=text_color)
+                    current_x += char_width + 5
+                success = True
+                print("Method 6 (rectangles) succeeded")
+            except Exception as e:
+                print(f"Method 6 failed: {e}")
+        
+        # Сохраняем
+        output_buffer = io.BytesIO()
+        image.save(output_buffer, format='PNG', quality=95)
+        output_buffer.seek(0)
+        
+        result_base64 = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
+        
+        return jsonify({
+            "success": True,
+            "image": result_base64,
+            "debug": {
+                "image_size": f"{width}x{height}",
+                "text": text,
+                "position": f"({x}, {y})",
+                "font_size": font_size,
+                "text_rendered": success
+            }
+        })
+        
+    except Exception as e:
+        print(f"Error in robust_overlay: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
 @app.route('/smart-overlay', methods=['POST'])
 def smart_overlay():
     """Умное наложение текста с автоматическим разбиением и позиционированием"""
