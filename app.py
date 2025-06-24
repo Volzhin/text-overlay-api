@@ -714,6 +714,231 @@ def test_fonts():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+def smart_text_wrap(text, max_width, font, draw):
+    """Умное разбиение текста на строки"""
+    words = text.split()
+    lines = []
+    current_line = []
+    
+    for word in words:
+        # Проверяем поместится ли слово в текущую строку
+        test_line = ' '.join(current_line + [word])
+        try:
+            bbox = draw.textbbox((0, 0), test_line, font=font)
+            line_width = bbox[2] - bbox[0]
+        except:
+            # Если не можем получить размер, используем приблизительный расчет
+            line_width = len(test_line) * (font.size if hasattr(font, 'size') else 20) * 0.6
+        
+        if line_width <= max_width:
+            current_line.append(word)
+        else:
+            if current_line:
+                lines.append(' '.join(current_line))
+                current_line = [word]
+            else:
+                # Слово слишком длинное - разбиваем его
+                lines.append(word)
+    
+    if current_line:
+        lines.append(' '.join(current_line))
+    
+    return lines
+
+def get_safe_font(font_size):
+    """Получение безопасного шрифта с поддержкой кириллицы"""
+    # Шрифты с хорошей поддержкой кириллицы
+    cyrillic_fonts = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"
+    ]
+    
+    for font_path in cyrillic_fonts:
+        if os.path.exists(font_path):
+            try:
+                font = ImageFont.truetype(font_path, font_size)
+                # Тестируем с кириллицей
+                test_img = Image.new('RGB', (100, 100))
+                test_draw = ImageDraw.Draw(test_img)
+                test_draw.textbbox((0, 0), "Тест", font=font)
+                return font
+            except:
+                continue
+    
+    # Fallback к дефолтному
+    return ImageFont.load_default()
+
+@app.route('/smart-overlay', methods=['POST'])
+def smart_overlay():
+    """Умное наложение текста с автоматическим разбиением и позиционированием"""
+    try:
+        data = request.get_json(force=True)
+        
+        # Декодируем изображение
+        image_data = data['image']
+        if image_data.startswith('data:image'):
+            header, encoded = image_data.split(',', 1)
+            image_bytes = base64.b64decode(encoded)
+        else:
+            image_bytes = base64.b64decode(image_data)
+        
+        from PIL import ImageFile
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
+        
+        image = Image.open(io.BytesIO(image_bytes))
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        draw = ImageDraw.Draw(image)
+        width, height = image.size
+        
+        # Параметры
+        text = str(data.get('text', 'Пример текста'))
+        base_font_size = data.get('fontSize', min(width, height) // 15)
+        position = data.get('position', 'center')  # top, center, bottom
+        margin = data.get('margin', min(width, height) // 20)
+        
+        # Цвета
+        text_color = tuple(data.get('textColor', [255, 255, 255]))[:3]
+        outline_color = tuple(data.get('outlineColor', [0, 0, 0]))[:3]
+        bg_color = tuple(data.get('backgroundColor', [0, 0, 0, 128]))
+        use_background = data.get('useBackground', True)
+        
+        print(f"Processing text: '{text}' on {width}x{height} image")
+        
+        # Получаем безопасный шрифт
+        font = get_safe_font(base_font_size)
+        
+        # Максимальная ширина текста (с отступами)
+        max_text_width = width - (margin * 2)
+        
+        # Разбиваем текст на строки
+        lines = smart_text_wrap(text, max_text_width, font, draw)
+        
+        # Вычисляем размеры текстового блока
+        line_heights = []
+        line_widths = []
+        
+        for line in lines:
+            try:
+                bbox = draw.textbbox((0, 0), line, font=font)
+                line_widths.append(bbox[2] - bbox[0])
+                line_heights.append(bbox[3] - bbox[1])
+            except:
+                # Fallback расчет
+                char_width = base_font_size * 0.6
+                line_widths.append(len(line) * char_width)
+                line_heights.append(base_font_size)
+        
+        total_text_width = max(line_widths) if line_widths else 0
+        line_spacing = max(line_heights) * 0.3 if line_heights else base_font_size * 0.3
+        total_text_height = sum(line_heights) + (len(lines) - 1) * line_spacing
+        
+        # Определяем позицию текстового блока
+        if position == 'top':
+            block_y = margin + total_text_height // 2
+        elif position == 'bottom':
+            block_y = height - margin - total_text_height // 2
+        else:  # center
+            block_y = height // 2
+        
+        block_x = width // 2
+        
+        # Рисуем фон для текста (если нужен)
+        if use_background and len(bg_color) >= 3:
+            padding = margin // 2
+            bg_rect = [
+                block_x - total_text_width // 2 - padding,
+                int(block_y - total_text_height // 2 - padding),
+                block_x + total_text_width // 2 + padding,
+                int(block_y + total_text_height // 2 + padding)
+            ]
+            
+            # Создаем полупрозрачный фон
+            if len(bg_color) == 4:
+                overlay = Image.new('RGBA', image.size, (0, 0, 0, 0))
+                overlay_draw = ImageDraw.Draw(overlay)
+                overlay_draw.rounded_rectangle(bg_rect, radius=padding//3, fill=bg_color)
+                # Конвертируем в RGBA для наложения
+                if image.mode != 'RGBA':
+                    image = image.convert('RGBA')
+                image = Image.alpha_composite(image, overlay)
+                # Возвращаем в RGB
+                if image.mode == 'RGBA':
+                    rgb_image = Image.new('RGB', image.size, (255, 255, 255))
+                    rgb_image.paste(image, mask=image.split()[-1] if len(image.split()) == 4 else None)
+                    image = rgb_image
+                draw = ImageDraw.Draw(image)
+            else:
+                draw.rounded_rectangle(bg_rect, radius=padding//3, fill=bg_color[:3])
+        
+        # Рисуем текст строка за строкой
+        current_y = block_y - total_text_height // 2
+        
+        for i, line in enumerate(lines):
+            if not line.strip():
+                current_y += line_heights[i] if i < len(line_heights) else base_font_size
+                continue
+            
+            line_width = line_widths[i]
+            line_x = block_x - line_width // 2
+            
+            # Убеждаемся что координаты валидны
+            line_x = max(margin, min(line_x, width - line_width - margin))
+            current_y = max(0, min(current_y, height - base_font_size))
+            
+            try:
+                # Рисуем обводку
+                outline_size = max(1, base_font_size // 20)
+                for dx in range(-outline_size, outline_size + 1):
+                    for dy in range(-outline_size, outline_size + 1):
+                        if dx != 0 or dy != 0:
+                            draw.text((line_x + dx, int(current_y) + dy), line, font=font, fill=outline_color)
+                
+                # Рисуем основной текст
+                draw.text((line_x, int(current_y)), line, font=font, fill=text_color)
+                
+                print(f"Drew line '{line}' at ({line_x}, {current_y})")
+                
+            except Exception as e:
+                print(f"Error drawing line '{line}': {e}")
+                # Простой fallback без обводки
+                try:
+                    draw.text((line_x, int(current_y)), line, fill=text_color)
+                except:
+                    # Рисуем прямоугольник как индикатор
+                    draw.rectangle([line_x, int(current_y), line_x + 100, int(current_y) + 20], fill=text_color)
+            
+            current_y += line_heights[i] + line_spacing
+        
+        # Сохраняем результат
+        output_buffer = io.BytesIO()
+        image.save(output_buffer, format='PNG', quality=95, optimize=True)
+        output_buffer.seek(0)
+        
+        result_base64 = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
+        
+        return jsonify({
+            "success": True,
+            "image": result_base64,
+            "debug": {
+                "image_size": f"{width}x{height}",
+                "lines_count": len(lines),
+                "lines": lines,
+                "position": position,
+                "text_block_size": f"{total_text_width}x{total_text_height}",
+                "font_size": base_font_size
+            }
+        })
+        
+    except Exception as e:
+        print(f"Error in smart_overlay: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
 @app.route('/simple-text-test', methods=['POST'])
 def simple_text_test():
     """Максимально простой тест наложения текста"""
