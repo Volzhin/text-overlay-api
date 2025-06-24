@@ -5,6 +5,8 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import base64
 import os
+import requests
+import re
 from pathlib import Path
 
 app = Flask(__name__)
@@ -16,6 +18,61 @@ app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024  # 32MB
 # Папка для шрифтов
 FONTS_DIR = Path("fonts")
 FONTS_DIR.mkdir(exist_ok=True)
+
+# Популярные Google Fonts с поддержкой кириллицы
+GOOGLE_FONTS_CYRILLIC = {
+    "roboto": "https://fonts.gstatic.com/s/roboto/v30/KFOmCnqEu92Fr1Mu72xKOzY.woff2",
+    "opensans": "https://fonts.gstatic.com/s/opensans/v40/memSYaGs126MiZpBA-UvWbX2vVnXBbObj2OVZyOOSr4dVJWUgsjZ0B4gaVc.ttf",
+    "montserrat": "https://fonts.gstatic.com/s/montserrat/v26/JTUHjIg1_i6t8kCHKm4532VJOt5-QNFgpCtr6Ew7.ttf",
+    "ptsans": "https://fonts.gstatic.com/s/ptsans/v17/jizaRExUiTo99u79D0KEwA.ttf",
+    "ptserif": "https://fonts.gstatic.com/s/ptserif/v18/EJRVQgYoZZY2vCFuvAFWzr8.ttf",
+    "playfair": "https://fonts.gstatic.com/s/playfairdisplay/v36/nuFiD-vYSZviVYUb_rj3ij__anPXDTzYgEM8.ttf",
+    "lora": "https://fonts.gstatic.com/s/lora/v32/0QIvMX1D_JOuMw_hLdO6T2wV.ttf",
+    "nunito": "https://fonts.gstatic.com/s/nunito/v26/XRXI3I6Li01BKofAjsOUb-vISTs.ttf"
+}
+
+def download_google_font(font_name, font_size):
+    """Скачивает Google Font если нужен"""
+    if not font_name:
+        return None
+        
+    font_name_lower = font_name.lower().replace(' ', '').replace('-', '')
+    
+    # Проверяем есть ли в предустановленных
+    if font_name_lower in GOOGLE_FONTS_CYRILLIC:
+        font_url = GOOGLE_FONTS_CYRILLIC[font_name_lower]
+        
+        # Путь для сохранения
+        font_path = FONTS_DIR / f"{font_name_lower}.ttf"
+        
+        # Скачиваем если еще нет
+        if not font_path.exists():
+            try:
+                print(f"Downloading Google Font: {font_name}")
+                headers = {'User-Agent': 'Mozilla/5.0 (compatible)'}
+                response = requests.get(font_url, headers=headers, timeout=10)
+                
+                if response.status_code == 200:
+                    with open(font_path, 'wb') as f:
+                        f.write(response.content)
+                    print(f"Font saved: {font_path}")
+                else:
+                    print(f"Failed to download: {response.status_code}")
+                    return None
+            except Exception as e:
+                print(f"Download error: {e}")
+                return None
+        
+        # Загружаем шрифт
+        try:
+            font = ImageFont.truetype(str(font_path), font_size)
+            print(f"Loaded Google Font: {font_name}")
+            return font
+        except Exception as e:
+            print(f"Font load error: {e}")
+            return None
+    
+    return None
 
 def get_safe_font(font_size):
     """Получение безопасного шрифта"""
@@ -131,6 +188,7 @@ def overlay_text():
         original_text = str(data.get('text', 'ТЕКСТ'))
         font_size = data.get('fontSize', min(width, height) // 15)
         position = data.get('position', 'bottom')  # top, center, bottom
+        font_family = data.get('fontFamily', None)  # Новый параметр для Google Fonts
         
         # Цвета
         text_color = tuple(data.get('textColor', [255, 255, 255]))[:3]
@@ -138,9 +196,20 @@ def overlay_text():
         outline_width = data.get('outlineWidth', 2)
         
         print(f"Processing: '{original_text}' on {width}x{height}")
+        if font_family:
+            print(f"Requested font: {font_family}")
         
-        # Получаем шрифт
-        font = get_safe_font(font_size)
+        # Получаем шрифт (сначала пробуем Google Font)
+        font = None
+        used_google_font = False
+        
+        if font_family:
+            font = download_google_font(font_family, font_size)
+            if font:
+                used_google_font = True
+        
+        if not font:
+            font = get_safe_font(font_size)
         
         # Определяем текст для отображения
         display_text = original_text
@@ -262,6 +331,8 @@ def overlay_text():
                 "original_text": original_text,
                 "display_text": display_text,
                 "font_works": font_works,
+                "used_google_font": used_google_font,
+                "requested_font": font_family,
                 "lines": lines,
                 "image_size": f"{width}x{height}"
             }
@@ -270,6 +341,24 @@ def overlay_text():
     except Exception as e:
         print(f"Error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/fonts', methods=['GET'])
+def available_fonts():
+    """Список доступных Google Fonts для основного endpoint"""
+    return jsonify({
+        "available_google_fonts": list(GOOGLE_FONTS_CYRILLIC.keys()),
+        "usage": "Добавьте параметр 'fontFamily' в запрос к /overlay",
+        "examples": {
+            "roboto": "Roboto",
+            "opensans": "Open Sans", 
+            "montserrat": "Montserrat",
+            "ptsans": "PT Sans",
+            "ptserif": "PT Serif",
+            "playfair": "Playfair Display",
+            "lora": "Lora",
+            "nunito": "Nunito"
+        }
+    })
 
 @app.route('/health', methods=['GET'])
 def health():
