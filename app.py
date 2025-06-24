@@ -322,26 +322,57 @@ def home():
 def overlay_text():
     """Основной endpoint наложения текста"""
     try:
-        # Гибкое получение JSON данных
+        # Детальная обработка входящих данных
+        content_type = request.content_type or ''
+        
+        # Логирование для отладки
+        print(f"Content-Type: {content_type}")
+        print(f"Request data length: {len(request.data)}")
+        
+        # Попытка получить JSON данные
+        data = None
         if request.is_json:
             data = request.get_json()
-        elif request.content_type and 'application/json' in request.content_type:
+        elif 'application/json' in content_type:
             data = request.get_json(force=True)
         else:
-            # Попытка парсинга как JSON даже если Content-Type неправильный
+            # Последняя попытка - парсим как JSON
             try:
                 import json
-                data = json.loads(request.data.decode('utf-8'))
-            except:
-                return jsonify({"error": "Неверный формат данных. Ожидается JSON."}), 400
+                raw_data = request.data.decode('utf-8')
+                data = json.loads(raw_data)
+            except Exception as e:
+                return jsonify({
+                    "error": f"Ошибка парсинга JSON: {str(e)}", 
+                    "content_type": content_type,
+                    "data_preview": str(request.data[:100])
+                }), 400
         
-        if not data or 'image' not in data:
-            return jsonify({"error": "Поле 'image' обязательно"}), 400
+        if not data:
+            return jsonify({"error": "Пустые данные"}), 400
+        
+        # Валидация обязательных полей
+        if 'image' not in data:
+            return jsonify({
+                "error": "Поле 'image' обязательно",
+                "received_fields": list(data.keys()) if isinstance(data, dict) else "not_dict"
+            }), 400
         
         if 'text' not in data or not str(data['text']).strip():
-            return jsonify({"error": "Поле 'text' обязательно"}), 400
+            return jsonify({
+                "error": "Поле 'text' обязательно и не может быть пустым",
+                "received_text": data.get('text', 'missing')
+            }), 400
         
-        result_buffer, metadata = process_image_with_auto_sizing(data['image'], data)
+        # Валидация изображения
+        image_data = data['image']
+        if not isinstance(image_data, str):
+            return jsonify({"error": "Поле 'image' должно быть строкой"}), 400
+        
+        if len(image_data) < 100:
+            return jsonify({"error": "Изображение слишком маленькое или повреждено"}), 400
+        
+        result_buffer, metadata = process_image_with_auto_sizing(image_data, data)
         result_base64 = base64.b64encode(result_buffer.getvalue()).decode('utf-8')
         
         return jsonify({
@@ -353,7 +384,15 @@ def overlay_text():
     except Exception as e:
         error_msg = str(e)
         print(f"Ошибка API: {error_msg}")
-        return jsonify({"success": False, "error": error_msg}), 500
+        return jsonify({
+            "success": False, 
+            "error": error_msg,
+            "debug_info": {
+                "content_type": getattr(request, 'content_type', 'unknown'),
+                "method": request.method,
+                "data_length": len(request.data) if request.data else 0
+            }
+        }), 500
 
 @app.route('/upload-font', methods=['POST'])
 def upload_font():
