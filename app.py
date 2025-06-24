@@ -72,25 +72,31 @@ def get_size_preset(width, height):
     }
 
 def load_font(font_name="arial", font_size=30):
-    """Загружает шрифт"""
+    """Загружает шрифт с поддержкой Unicode"""
     try:
         # Пользовательские шрифты
         custom_font_path = FONTS_DIR / f"{font_name}.ttf"
         if custom_font_path.exists():
-            return ImageFont.truetype(str(custom_font_path), font_size)
+            return ImageFont.truetype(str(custom_font_path), font_size, encoding='utf-8')
         
-        # Системные шрифты
+        # Системные шрифты с поддержкой Unicode
         system_fonts = {
             "arial": [
                 "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
                 "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+                "/System/Library/Fonts/Arial Unicode MS.ttf",
                 "/System/Library/Fonts/Arial.ttf",
-                "C:/Windows/Fonts/arial.ttf"
+                "C:/Windows/Fonts/arial.ttf",
+                "C:/Windows/Fonts/calibri.ttf"
             ],
             "roboto": [
                 "/usr/share/fonts/truetype/roboto/Roboto-Bold.ttf",
+                "/usr/share/fonts/truetype/roboto/Roboto-Regular.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
                 "/System/Library/Fonts/Helvetica.ttc",
-                "C:/Windows/Fonts/arial.ttf"
+                "C:/Windows/Fonts/segoeui.ttf"
             ]
         }
         
@@ -98,43 +104,59 @@ def load_font(font_name="arial", font_size=30):
         
         for font_path in font_paths:
             if os.path.exists(font_path):
-                return ImageFont.truetype(font_path, font_size)
+                try:
+                    return ImageFont.truetype(font_path, font_size, encoding='utf-8')
+                except (OSError, UnicodeError):
+                    continue
         
+        # Fallback к дефолтному шрифту
         return ImageFont.load_default()
         
-    except Exception:
+    except Exception as e:
+        print(f"Ошибка загрузки шрифта: {e}")
         return ImageFont.load_default()
 
 def calculate_optimal_font_size(text, max_width, base_font_size, font_name="arial"):
-    """Вычисляет оптимальный размер шрифта"""
-    lines = text.split('\n')
-    longest_line = max(lines, key=len) if lines else text
-    
-    font_size = base_font_size
-    
-    while font_size > 12:
-        font = load_font(font_name, font_size)
-        temp_img = Image.new('RGB', (1, 1))
-        temp_draw = ImageDraw.Draw(temp_img)
-        bbox = temp_draw.textbbox((0, 0), longest_line, font=font)
-        text_width = bbox[2] - bbox[0]
+    """Вычисляет оптимальный размер шрифта с поддержкой Unicode"""
+    try:
+        lines = text.split('\n')
+        longest_line = max(lines, key=len) if lines else text
         
-        if text_width <= max_width:
-            break
+        font_size = base_font_size
+        
+        while font_size > 12:
+            font = load_font(font_name, font_size)
+            temp_img = Image.new('RGB', (1, 1))
+            temp_draw = ImageDraw.Draw(temp_img)
             
-        font_size -= 2
-    
-    return max(font_size, 12)
+            try:
+                bbox = temp_draw.textbbox((0, 0), longest_line, font=font)
+                text_width = bbox[2] - bbox[0]
+                
+                if text_width <= max_width:
+                    break
+            except (UnicodeError, OSError):
+                # Если проблема с кодировкой, уменьшаем размер
+                pass
+                
+            font_size -= 2
+        
+        return max(font_size, 12)
+    except Exception:
+        return base_font_size
 
 def process_image_with_auto_sizing(image_data, text_config):
     """Обрабатывает изображение с автоопределением размеров"""
     try:
         # Декодируем изображение
-        if image_data.startswith('data:image'):
-            header, encoded = image_data.split(',', 1)
-            image_bytes = base64.b64decode(encoded)
+        if isinstance(image_data, str):
+            if image_data.startswith('data:image'):
+                header, encoded = image_data.split(',', 1)
+                image_bytes = base64.b64decode(encoded)
+            else:
+                image_bytes = base64.b64decode(image_data)
         else:
-            image_bytes = base64.b64decode(image_data)
+            image_bytes = image_data
         
         image = Image.open(io.BytesIO(image_bytes))
         width, height = image.size
@@ -146,25 +168,45 @@ def process_image_with_auto_sizing(image_data, text_config):
         
         draw = ImageDraw.Draw(image)
         
-        # Параметры текста
-        text = text_config.get('text', '')
+        # Параметры текста с безопасной обработкой Unicode
+        text = str(text_config.get('text', ''))
+        
+        # Проверяем и очищаем текст от проблемных символов
+        try:
+            # Нормализуем Unicode
+            import unicodedata
+            text = unicodedata.normalize('NFC', text)
+        except:
+            pass
+        
         font_name = text_config.get('fontName', 'arial')
         
         # Автоматический размер шрифта или пользовательский
         if 'fontSize' in text_config and text_config['fontSize']:
-            font_size = text_config['fontSize']
+            font_size = int(text_config['fontSize'])
         else:
             font_size = calculate_optimal_font_size(
                 text, preset['max_text_width'], preset['default_font_size'], font_name
             )
         
-        font_color = tuple(text_config.get('fontColor', [255, 255, 255]))
-        bg_color = tuple(text_config.get('bgColor', [0, 0, 0, 180]))
+        # Цвета с безопасным преобразованием
+        font_color = text_config.get('fontColor', [255, 255, 255])
+        if isinstance(font_color, list) and len(font_color) >= 3:
+            font_color = tuple(font_color[:4])  # RGBA или RGB
+        else:
+            font_color = (255, 255, 255)
+            
+        bg_color = text_config.get('bgColor', [0, 0, 0, 180])
+        if isinstance(bg_color, list) and len(bg_color) >= 3:
+            bg_color = tuple(bg_color[:4])
+        else:
+            bg_color = (0, 0, 0, 180)
+            
         transparent_bg = text_config.get('transparentBg', False)
         
         # Позиция
-        pos_x = text_config.get('posX', preset['default_position']['x'])
-        pos_y = text_config.get('posY', preset['default_position']['y'])
+        pos_x = float(text_config.get('posX', preset['default_position']['x']))
+        pos_y = float(text_config.get('posY', preset['default_position']['y']))
         
         font = load_font(font_name, font_size)
         
@@ -174,9 +216,14 @@ def process_image_with_auto_sizing(image_data, text_config):
         line_widths = []
         
         for line in lines:
-            bbox = draw.textbbox((0, 0), line, font=font)
-            line_widths.append(bbox[2] - bbox[0])
-            line_heights.append(bbox[3] - bbox[1])
+            try:
+                bbox = draw.textbbox((0, 0), line, font=font)
+                line_widths.append(bbox[2] - bbox[0])
+                line_heights.append(bbox[3] - bbox[1])
+            except (UnicodeError, OSError):
+                # Если проблема с отдельной линией, используем приблизительные размеры
+                line_widths.append(len(line) * font_size * 0.6)
+                line_heights.append(font_size)
         
         max_width = max(line_widths) if line_widths else 0
         total_height = sum(line_heights) + (len(lines) - 1) * (font_size * 0.2)
@@ -214,15 +261,21 @@ def process_image_with_auto_sizing(image_data, text_config):
             line_width = line_widths[i]
             line_x = x - line_width//2
             
-            # Тень
-            if not transparent_bg:
-                draw.text(
-                    (line_x + shadow_offset, current_y + shadow_offset), 
-                    line, font=font, fill=(0, 0, 0, 100)
-                )
-            
-            # Основной текст
-            draw.text((line_x, current_y), line, font=font, fill=font_color)
+            try:
+                # Тень
+                if not transparent_bg:
+                    draw.text(
+                        (line_x + shadow_offset, current_y + shadow_offset), 
+                        line, font=font, fill=(0, 0, 0, 100)
+                    )
+                
+                # Основной текст
+                draw.text((line_x, current_y), line, font=font, fill=font_color)
+            except (UnicodeError, OSError) as e:
+                print(f"Ошибка рисования текста: {e}")
+                # Пропускаем проблемную строку
+                pass
+                
             current_y += line_heights[i] + int(font_size * 0.2)
         
         # Конвертируем для сохранения
@@ -239,10 +292,12 @@ def process_image_with_auto_sizing(image_data, text_config):
             "detected_size": f"{width}x{height}",
             "preset_used": preset['name'],
             "calculated_font_size": font_size,
-            "position": {"x": pos_x, "y": pos_y}
+            "position": {"x": pos_x, "y": pos_y},
+            "text_lines": len(lines)
         }
         
     except Exception as e:
+        print(f"Детальная ошибка: {e}")
         raise Exception(f"Ошибка обработки изображения: {str(e)}")
 
 # API Routes
@@ -251,8 +306,9 @@ def home():
     """API информация"""
     return jsonify({
         "service": "Text Overlay API",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "status": "running",
+        "unicode_support": True,
         "supported_sizes": list(SIZE_PRESETS.keys()),
         "endpoints": {
             "POST /overlay": "Наложение текста",
@@ -267,12 +323,12 @@ def home():
 def overlay_text():
     """Основной endpoint наложения текста"""
     try:
-        data = request.get_json()
+        data = request.get_json(force=True)
         
         if not data or 'image' not in data:
             return jsonify({"error": "Поле 'image' обязательно"}), 400
         
-        if 'text' not in data or not data['text'].strip():
+        if 'text' not in data or not str(data['text']).strip():
             return jsonify({"error": "Поле 'text' обязательно"}), 400
         
         result_buffer, metadata = process_image_with_auto_sizing(data['image'], data)
@@ -285,7 +341,9 @@ def overlay_text():
         })
         
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        error_msg = str(e)
+        print(f"Ошибка API: {error_msg}")
+        return jsonify({"success": False, "error": error_msg}), 500
 
 @app.route('/upload-font', methods=['POST'])
 def upload_font():
@@ -305,7 +363,7 @@ def upload_font():
         
         # Тестируем шрифт
         try:
-            ImageFont.truetype(str(font_path), 24)
+            ImageFont.truetype(str(font_path), 24, encoding='utf-8')
         except Exception:
             font_path.unlink()
             return jsonify({"error": "Невозможно загрузить шрифт"}), 400
@@ -329,7 +387,8 @@ def list_fonts():
         return jsonify({
             "system_fonts": system_fonts,
             "custom_fonts": custom_fonts,
-            "total": len(system_fonts) + len(custom_fonts)
+            "total": len(system_fonts) + len(custom_fonts),
+            "unicode_support": True
         })
         
     except Exception as e:
@@ -355,7 +414,9 @@ def health():
     """Проверка здоровья"""
     return jsonify({
         "status": "healthy",
-        "fonts_available": len(list(FONTS_DIR.glob("*.ttf"))) + 3
+        "fonts_available": len(list(FONTS_DIR.glob("*.ttf"))) + 3,
+        "unicode_support": True,
+        "version": "2.1.0"
     })
 
 # Обработчики ошибок
@@ -373,4 +434,4 @@ def internal_error(e):
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port, debug=False)
