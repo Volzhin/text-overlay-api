@@ -394,11 +394,20 @@ def overlay_text():
         result_buffer, metadata = process_image_with_auto_sizing(image_data, data)
         result_base64 = base64.b64encode(result_buffer.getvalue()).decode('utf-8')
         
-        return jsonify({
+        # Опция для выбора формата вывода
+        include_prefix = data.get('includeDataUrl', False)
+        
+        response_data = {
             "success": True,
-            "image": f"data:image/png;base64,{result_base64}",
             "metadata": metadata
-        })
+        }
+        
+        if include_prefix:
+            response_data["image"] = f"data:image/png;base64,{result_base64}"
+        else:
+            response_data["image"] = result_base64
+            
+        return jsonify(response_data)
         
     except Exception as e:
         error_msg = str(e)
@@ -486,6 +495,53 @@ def health():
         "unicode_support": True,
         "version": "2.1.0"
     })
+
+@app.route('/overlay-raw', methods=['POST'])
+def overlay_text_raw():
+    """Endpoint наложения текста с возвратом чистого base64"""
+    try:
+        # Используем ту же логику что и в основном endpoint
+        data = overlay_text().get_json()
+        
+        if data.get('success'):
+            # Убираем префикс если он есть
+            image_data = data['image']
+            if image_data.startswith('data:image'):
+                clean_base64 = image_data.split(',', 1)[1]
+            else:
+                clean_base64 = image_data
+                
+            return jsonify({
+                "success": True,
+                "image": clean_base64,
+                "metadata": data.get('metadata', {})
+            })
+        else:
+            return jsonify(data), 500
+            
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/test', methods=['POST'])
+def test_endpoint():
+    """Тестовый endpoint для отладки"""
+    try:
+        data = request.get_json(force=True)
+        
+        return jsonify({
+            "received_data": {
+                "keys": list(data.keys()) if isinstance(data, dict) else "not_dict",
+                "image_length": len(data.get('image', '')) if 'image' in data else 0,
+                "text_value": data.get('text', 'missing'),
+                "has_image": 'image' in data,
+                "has_text": 'text' in data
+            },
+            "content_type": request.content_type,
+            "method": request.method
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
 
 # Обработчики ошибок
 @app.errorhandler(413)
