@@ -620,23 +620,30 @@ def simple_overlay():
         outline_size = max(3, font_size // 16)
         
         try:
-            # Толстая черная обводка
-            for dx in range(-outline_size, outline_size + 1):
-                for dy in range(-outline_size, outline_size + 1):
-                    if dx != 0 or dy != 0:
-                        draw.text((final_x + dx, final_y + dy), text, font=font, fill=(0, 0, 0))
-            
-            # Яркий белый текст поверх
+            # Сначала пробуем нарисовать с нормальным шрифтом
             draw.text((final_x, final_y), text, font=font, fill=(255, 255, 255))
+            print("Text drawn with normal font")
             
         except Exception as e:
-            print(f"Text drawing error: {e}")
-            # Fallback - рисуем простой текст
+            print(f"Normal font failed: {e}")
             try:
-                draw.text((final_x, final_y), "TEXT", font=font, fill=(255, 255, 255))
-            except:
-                # Последний fallback - рисуем прямоугольник
-                draw.rectangle([final_x, final_y, final_x + 100, final_y + 30], fill=(255, 255, 255))
+                # Пробуем с дефолтным шрифтом
+                default_font = ImageFont.load_default()
+                draw.text((final_x, final_y), text, font=default_font, fill=(255, 255, 255))
+                print("Text drawn with default font")
+                
+            except Exception as e2:
+                print(f"Default font failed: {e2}")
+                try:
+                    # Последний fallback - рисуем без шрифта (PIL должен использовать встроенный)
+                    draw.text((final_x, final_y), "FALLBACK TEXT", fill=(255, 255, 255))
+                    print("Fallback text drawn")
+                    
+                except Exception as e3:
+                    print(f"Even fallback failed: {e3}")
+                    # Если ничего не работает - рисуем белый прямоугольник вместо текста
+                    draw.rectangle([final_x, final_y, final_x + 200, final_y + 50], fill=(255, 255, 255))
+                    print("White rectangle drawn as ultimate fallback")
         
         # Добавляем красный прямоугольник для отладки
         debug_rect = [
@@ -666,6 +673,87 @@ def simple_overlay():
         
     except Exception as e:
         print(f"Error in simple_overlay: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/test-fonts', methods=['GET'])
+def test_fonts():
+    """Тестирует доступные шрифты"""
+    try:
+        results = {}
+        
+        # Тестируем системные шрифты
+        test_fonts = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "/System/Library/Fonts/Arial.ttf",
+            "C:/Windows/Fonts/arial.ttf"
+        ]
+        
+        for font_path in test_fonts:
+            try:
+                if os.path.exists(font_path):
+                    font = ImageFont.truetype(font_path, 24)
+                    results[font_path] = "Available"
+                else:
+                    results[font_path] = "Not found"
+            except Exception as e:
+                results[font_path] = f"Error: {str(e)}"
+        
+        # Тестируем дефолтный шрифт
+        try:
+            default_font = ImageFont.load_default()
+            results["default_font"] = "Available"
+        except Exception as e:
+            results["default_font"] = f"Error: {str(e)}"
+        
+        return jsonify({
+            "font_test_results": results,
+            "platform": os.name
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/simple-text-test', methods=['POST'])
+def simple_text_test():
+    """Максимально простой тест наложения текста"""
+    try:
+        data = request.get_json(force=True)
+        
+        # Создаем простое изображение
+        image = Image.new('RGB', (400, 300), color=(100, 150, 200))
+        draw = ImageDraw.Draw(image)
+        
+        text = data.get('text', 'TEST')
+        
+        # Используем только дефолтный шрифт
+        try:
+            # Рисуем белый текст без всяких сложностей
+            draw.text((50, 50), text, fill=(255, 255, 255))
+            draw.text((50, 100), "STATIC TEXT", fill=(255, 255, 255))
+            draw.text((50, 150), "123456789", fill=(255, 255, 255))
+            
+            # Рисуем прямоугольники для проверки
+            draw.rectangle([200, 50, 350, 100], fill=(255, 0, 0))  # Красный
+            draw.rectangle([200, 120, 350, 170], fill=(0, 255, 0))  # Зеленый
+            draw.rectangle([200, 190, 350, 240], fill=(0, 0, 255))  # Синий
+            
+        except Exception as e:
+            print(f"Even simple drawing failed: {e}")
+        
+        output_buffer = io.BytesIO()
+        image.save(output_buffer, format='PNG')
+        output_buffer.seek(0)
+        
+        result_base64 = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
+        
+        return jsonify({
+            "success": True,
+            "image": result_base64,
+            "message": "Simple test completed"
+        })
+        
+    except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
 @app.route('/create-text-image', methods=['POST'])
