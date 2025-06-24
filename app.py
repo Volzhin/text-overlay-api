@@ -772,6 +772,552 @@ def get_safe_font(font_size):
     # Fallback к дефолтному
     return ImageFont.load_default()
 
+import requests
+import urllib.request
+import re
+
+# Популярные Google Fonts с поддержкой кириллицы
+GOOGLE_FONTS_CYRILLIC = {
+    "roboto": "https://fonts.gstatic.com/s/roboto/v30/KFOmCnqEu92Fr1Mu72xKOzY.woff2",
+    "opensans": "https://fonts.gstatic.com/s/opensans/v40/memSYaGs126MiZpBA-UvWbX2vVnXBbObj2OVZyOOSr4dVJWUgsjZ0B4gaVc.ttf",
+    "montserrat": "https://fonts.gstatic.com/s/montserrat/v26/JTUHjIg1_i6t8kCHKm4532VJOt5-QNFgpCtr6Ew7.ttf",
+    "ptsans": "https://fonts.gstatic.com/s/ptsans/v17/jizaRExUiTo99u79D0KEwA.ttf",
+    "ptserif": "https://fonts.gstatic.com/s/ptserif/v18/EJRVQgYoZZY2vCFuvAFWzr8.ttf",
+    "playfair": "https://fonts.gstatic.com/s/playfairdisplay/v36/nuFiD-vYSZviVYUb_rj3ij__anPXDTzYgEM8.ttf",
+    "lora": "https://fonts.gstatic.com/s/lora/v32/0QIvMX1D_JOuMw_hLdO6T2wV.ttf",
+    "nunito": "https://fonts.gstatic.com/s/nunito/v26/XRXI3I6Li01BKofAjsOUb-vISTs.ttf"
+}
+
+def download_google_font(font_name, font_size):
+    """Скачивает шрифт с Google Fonts"""
+    font_name_lower = font_name.lower()
+    
+    # Проверяем есть ли в нашем списке
+    if font_name_lower in GOOGLE_FONTS_CYRILLIC:
+        font_url = GOOGLE_FONTS_CYRILLIC[font_name_lower]
+    else:
+        # Пытаемся найти шрифт через Google Fonts API
+        try:
+            search_url = f"https://fonts.googleapis.com/css2?family={font_name.replace(' ', '+')}&display=swap"
+            response = requests.get(search_url, timeout=10)
+            
+            if response.status_code == 200:
+                # Ищем ссылку на .ttf или .woff2 файл
+                css_content = response.text
+                font_urls = re.findall(r'url\((https://[^)]+\.(?:ttf|woff2))\)', css_content)
+                if font_urls:
+                    font_url = font_urls[0]
+                else:
+                    print(f"No font files found for {font_name}")
+                    return None
+            else:
+                print(f"Font {font_name} not found on Google Fonts")
+                return None
+        except Exception as e:
+            print(f"Error searching for font {font_name}: {e}")
+            return None
+    
+    # Создаем имя файла
+    safe_name = re.sub(r'[^a-zA-Z0-9]', '', font_name_lower)
+    font_path = FONTS_DIR / f"{safe_name}.ttf"
+    
+    # Скачиваем если еще нет
+    if not font_path.exists():
+        try:
+            print(f"Downloading {font_name} from {font_url}")
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            
+            response = requests.get(font_url, headers=headers, timeout=30)
+            if response.status_code == 200:
+                with open(font_path, 'wb') as f:
+                    f.write(response.content)
+                print(f"Font saved to {font_path}")
+            else:
+                print(f"Failed to download font: HTTP {response.status_code}")
+                return None
+                
+        except Exception as e:
+            print(f"Error downloading font: {e}")
+            return None
+    
+    # Загружаем шрифт
+    try:
+        font = ImageFont.truetype(str(font_path), font_size)
+        # Тестируем с кириллицей
+        test_img = Image.new('RGB', (100, 100))
+        test_draw = ImageDraw.Draw(test_img)
+        test_draw.textbbox((0, 0), "Тест", font=font)
+        print(f"Successfully loaded Google Font: {font_name}")
+        return font
+    except Exception as e:
+        print(f"Error loading downloaded font: {e}")
+        return None
+
+@app.route('/google-fonts-overlay', methods=['POST'])
+def google_fonts_overlay():
+    """Наложение текста с Google Fonts"""
+    try:
+        data = request.get_json(force=True)
+        
+        # Декодируем изображение
+        image_data = data['image']
+        if image_data.startswith('data:image'):
+            header, encoded = image_data.split(',', 1)
+            image_bytes = base64.b64decode(encoded)
+        else:
+            image_bytes = base64.b64decode(image_data)
+        
+        from PIL import ImageFile
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
+        
+        image = Image.open(io.BytesIO(image_bytes))
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        draw = ImageDraw.Draw(image)
+        width, height = image.size
+        
+        # Параметры
+        text = str(data.get('text', 'Пример текста'))
+        font_name = data.get('fontFamily', 'Roboto')
+        font_size = data.get('fontSize', min(width, height) // 12)
+        position = data.get('position', 'bottom')  # top, center, bottom
+        
+        # Стили
+        text_color = tuple(data.get('textColor', [255, 255, 255]))[:3]
+        outline_color = tuple(data.get('outlineColor', [0, 0, 0]))[:3]
+        outline_width = data.get('outlineWidth', 2)
+        bg_color = tuple(data.get('backgroundColor', [0, 0, 0, 150]))
+        use_background = data.get('useBackground', True)
+        
+        print(f"Processing text: '{text}' with font: {font_name}")
+        
+        # Пытаемся загрузить Google Font
+        google_font = download_google_font(font_name, font_size)
+        
+        if google_font:
+            font_to_use = google_font
+            print(f"Using Google Font: {font_name}")
+        else:
+            # Fallback на системные шрифты
+            font_to_use = get_cyrillic_font(font_size)
+            if font_to_use:
+                print("Using system Cyrillic font")
+            else:
+                try:
+                    font_to_use = ImageFont.load_default()
+                    print("Using default font")
+                except:
+                    font_to_use = None
+                    print("No fonts available")
+        
+        # Умное разбиение текста на строки
+        max_width = width - (width // 10)  # 90% ширины изображения
+        
+        if font_to_use:
+            lines = smart_text_wrap(text, max_width, font_to_use, draw)
+        else:
+            # Простое разбиение по словам
+            words = text.split()
+            lines = []
+            current_line = []
+            chars_per_line = max_width // (font_size // 2)
+            
+            for word in words:
+                test_line = ' '.join(current_line + [word])
+                if len(test_line) <= chars_per_line:
+                    current_line.append(word)
+                else:
+                    if current_line:
+                        lines.append(' '.join(current_line))
+                    current_line = [word]
+            if current_line:
+                lines.append(' '.join(current_line))
+        
+        # Вычисляем размеры текстового блока
+        line_heights = []
+        line_widths = []
+        
+        for line in lines:
+            if font_to_use:
+                try:
+                    bbox = draw.textbbox((0, 0), line, font=font_to_use)
+                    line_widths.append(bbox[2] - bbox[0])
+                    line_heights.append(bbox[3] - bbox[1])
+                except:
+                    line_widths.append(len(line) * font_size * 0.6)
+                    line_heights.append(font_size)
+            else:
+                line_widths.append(len(line) * font_size * 0.6)
+                line_heights.append(font_size)
+        
+        total_width = max(line_widths) if line_widths else 0
+        line_spacing = font_size * 0.3
+        total_height = sum(line_heights) + (len(lines) - 1) * line_spacing
+        
+        # Позиционирование
+        margin = max(20, min(width, height) // 25)
+        
+        if position == 'top':
+            block_y = margin + total_height // 2
+        elif position == 'bottom':
+            block_y = height - margin - total_height // 2
+        else:  # center
+            block_y = height // 2
+        
+        block_x = width // 2
+        
+        # Рисуем фон
+        if use_background:
+            padding = max(20, font_size // 3)
+            bg_rect = [
+                max(0, block_x - total_width // 2 - padding),
+                max(0, int(block_y - total_height // 2 - padding)),
+                min(width, block_x + total_width // 2 + padding),
+                min(height, int(block_y + total_height // 2 + padding))
+            ]
+            
+            # Полупрозрачный фон
+            overlay = Image.new('RGBA', image.size, (0, 0, 0, 0))
+            overlay_draw = ImageDraw.Draw(overlay)
+            overlay_draw.rounded_rectangle(bg_rect, radius=padding//2, fill=bg_color)
+            
+            if image.mode != 'RGBA':
+                image = image.convert('RGBA')
+            image = Image.alpha_composite(image, overlay)
+            
+            # Возвращаем в RGB
+            rgb_image = Image.new('RGB', image.size, (255, 255, 255))
+            rgb_image.paste(image, mask=image.split()[-1])
+            image = rgb_image
+            draw = ImageDraw.Draw(image)
+        
+        # Рисуем текст построчно
+        current_y = block_y - total_height // 2
+        
+        for i, line in enumerate(lines):
+            if not line.strip():
+                current_y += line_heights[i] if i < len(line_heights) else font_size
+                continue
+            
+            line_width = line_widths[i]
+            line_x = block_x - line_width // 2
+            
+            try:
+                # Обводка
+                if outline_width > 0:
+                    for dx in range(-outline_width, outline_width + 1):
+                        for dy in range(-outline_width, outline_width + 1):
+                            if dx != 0 or dy != 0:
+                                if font_to_use:
+                                    draw.text((line_x + dx, int(current_y) + dy), line, font=font_to_use, fill=outline_color)
+                                else:
+                                    draw.text((line_x + dx, int(current_y) + dy), line, fill=outline_color)
+                
+                # Основной текст
+                if font_to_use:
+                    draw.text((line_x, int(current_y)), line, font=font_to_use, fill=text_color)
+                else:
+                    draw.text((line_x, int(current_y)), line, fill=text_color)
+                
+                print(f"Drew line: '{line}' at ({line_x}, {current_y})")
+                
+            except Exception as e:
+                print(f"Error drawing line: {e}")
+                # Fallback - прямоугольники
+                char_width = font_size // 3
+                rect_x = line_x
+                for char in line:
+                    if char != ' ':
+                        draw.rectangle([rect_x, int(current_y), rect_x + char_width, int(current_y) + font_size], fill=text_color)
+                    rect_x += char_width + 2
+            
+            current_y += line_heights[i] + line_spacing
+        
+        # Сохраняем
+        output_buffer = io.BytesIO()
+        image.save(output_buffer, format='PNG', quality=95)
+        output_buffer.seek(0)
+        
+        result_base64 = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
+        
+        return jsonify({
+            "success": True,
+            "image": result_base64,
+            "debug": {
+                "text": text,
+                "font_family": font_name,
+                "used_google_font": google_font is not None,
+                "lines_count": len(lines),
+                "lines": lines,
+                "font_size": font_size
+            }
+        })
+        
+    except Exception as e:
+        print(f"Error in google_fonts_overlay: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/available-fonts', methods=['GET'])
+def available_fonts():
+    """Возвращает список доступных Google Fonts"""
+    return jsonify({
+        "google_fonts_cyrillic": list(GOOGLE_FONTS_CYRILLIC.keys()),
+        "popular_fonts": [
+            "Roboto", "Open Sans", "Montserrat", "PT Sans", "PT Serif",
+            "Playfair Display", "Lora", "Nunito", "Source Sans Pro", 
+            "Raleway", "Ubuntu", "Merriweather", "Oswald", "Poppins"
+        ],
+        "note": "Вы можете использовать любой шрифт с Google Fonts, поддерживающий кириллицу"
+    })
+
+import requests
+
+def download_cyrillic_font():
+    """Скачивает и сохраняет шрифт с поддержкой кириллицы"""
+    font_url = "https://fonts.gstatic.com/s/opensans/v40/memSYaGs126MiZpBA-UvWbX2vVnXBbObj2OVZyOOSr4dVJWUgsjZ0B4gaVc.ttf"
+    font_path = FONTS_DIR / "opensans-cyrillic.ttf"
+    
+    if not font_path.exists():
+        try:
+            print("Downloading Cyrillic font...")
+            urllib.request.urlretrieve(font_url, font_path)
+            print(f"Font downloaded to {font_path}")
+            return font_path
+        except Exception as e:
+            print(f"Failed to download font: {e}")
+            return None
+    return font_path
+
+def get_cyrillic_font(font_size):
+    """Получение шрифта с гарантированной поддержкой кириллицы"""
+    
+    # Сначала пробуем скачать хороший шрифт
+    downloaded_font = download_cyrillic_font()
+    if downloaded_font and downloaded_font.exists():
+        try:
+            font = ImageFont.truetype(str(downloaded_font), font_size)
+            # Тестируем с кириллицей
+            test_img = Image.new('RGB', (100, 100))
+            test_draw = ImageDraw.Draw(test_img)
+            test_draw.textbbox((0, 0), "Тест", font=font)
+            print("Using downloaded Cyrillic font")
+            return font
+        except Exception as e:
+            print(f"Downloaded font failed: {e}")
+    
+    # Локальные шрифты с кириллицей
+    cyrillic_fonts = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        "/System/Library/Fonts/Arial Unicode MS.ttf",
+        "/System/Library/Fonts/Helvetica.ttc"
+    ]
+    
+    for font_path in cyrillic_fonts:
+        if os.path.exists(font_path):
+            try:
+                font = ImageFont.truetype(font_path, font_size)
+                # Тестируем с кириллицей
+                test_img = Image.new('RGB', (100, 100))
+                test_draw = ImageDraw.Draw(test_img)
+                test_draw.textbbox((0, 0), "Тест", font=font)
+                print(f"Using system font: {font_path}")
+                return font
+            except Exception as e:
+                print(f"Font {font_path} failed: {e}")
+                continue
+    
+    print("No Cyrillic fonts found, will use transliteration")
+    return None
+
+def cyrillic_to_latin(text):
+    """Конвертация кириллицы в латиницу"""
+    cyrillic_map = {
+        'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'yo',
+        'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+        'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+        'ф': 'f', 'х': 'h', 'ц': 'c', 'ч': 'ch', 'ш': 'sh', 'щ': 'shch',
+        'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya',
+        'А': 'A', 'Б': 'B', 'В': 'V', 'Г': 'G', 'Д': 'D', 'Е': 'E', 'Ё': 'YO',
+        'Ж': 'ZH', 'З': 'Z', 'И': 'I', 'Й': 'Y', 'К': 'K', 'Л': 'L', 'М': 'M',
+        'Н': 'N', 'О': 'O', 'П': 'P', 'Р': 'R', 'С': 'S', 'Т': 'T', 'У': 'U',
+        'Ф': 'F', 'Х': 'H', 'Ц': 'C', 'Ч': 'CH', 'Ш': 'SH', 'Щ': 'SHCH',
+        'Ъ': '', 'Ы': 'Y', 'Ь': '', 'Э': 'E', 'Ю': 'YU', 'Я': 'YA'
+    }
+    
+    result = ''
+    for char in text:
+        result += cyrillic_map.get(char, char)
+    return result
+
+@app.route('/fixed-overlay', methods=['POST'])
+def fixed_overlay():
+    """Исправленное наложение текста с правильной кириллицей"""
+    try:
+        data = request.get_json(force=True)
+        
+        # Декодируем изображение
+        image_data = data['image']
+        if image_data.startswith('data:image'):
+            header, encoded = image_data.split(',', 1)
+            image_bytes = base64.b64decode(encoded)
+        else:
+            image_bytes = base64.b64decode(image_data)
+        
+        from PIL import ImageFile
+        ImageFile.LOAD_TRUNCATED_IMAGES = True
+        
+        image = Image.open(io.BytesIO(image_bytes))
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        draw = ImageDraw.Draw(image)
+        width, height = image.size
+        
+        original_text = str(data.get('text', 'ТЕКСТ'))
+        font_size = data.get('fontSize', min(width, height) // 8)
+        position = data.get('position', 'bottom')
+        
+        # Цвета
+        text_color = tuple(data.get('textColor', [255, 255, 255]))[:3]
+        bg_color = tuple(data.get('backgroundColor', [0, 0, 0, 180]))
+        outline_width = data.get('outlineWidth', 3)
+        
+        print(f"Processing text: '{original_text}'")
+        
+        # Пытаемся получить кириллический шрифт
+        cyrillic_font = get_cyrillic_font(font_size)
+        
+        # Определяем текст для отображения
+        if cyrillic_font:
+            display_text = original_text
+            font_to_use = cyrillic_font
+            print("Using Cyrillic font")
+        else:
+            # Используем транслитерацию
+            display_text = cyrillic_to_latin(original_text)
+            try:
+                font_to_use = ImageFont.load_default()
+            except:
+                font_to_use = None
+            print(f"Using transliteration: '{display_text}'")
+        
+        # Вычисляем размеры текста
+        if font_to_use:
+            try:
+                bbox = draw.textbbox((0, 0), display_text, font=font_to_use)
+                text_width = bbox[2] - bbox[0]
+                text_height = bbox[3] - bbox[1]
+            except:
+                text_width = len(display_text) * font_size * 0.6
+                text_height = font_size
+        else:
+            text_width = len(display_text) * font_size * 0.6
+            text_height = font_size
+        
+        # Позиционирование
+        margin = max(20, min(width, height) // 30)
+        
+        if position == 'top':
+            x = (width - text_width) // 2
+            y = margin
+        elif position == 'bottom':
+            x = (width - text_width) // 2
+            y = height - margin - text_height - 20
+        else:  # center
+            x = (width - text_width) // 2
+            y = (height - text_height) // 2
+        
+        # Рисуем фон
+        padding = max(15, font_size // 4)
+        bg_rect = [
+            max(0, x - padding),
+            max(0, y - padding),
+            min(width, x + int(text_width) + padding),
+            min(height, y + int(text_height) + padding)
+        ]
+        
+        # Создаем полупрозрачный фон
+        overlay = Image.new('RGBA', image.size, (0, 0, 0, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+        overlay_draw.rounded_rectangle(bg_rect, radius=padding//2, fill=bg_color)
+        
+        # Накладываем фон
+        if image.mode != 'RGBA':
+            image = image.convert('RGBA')
+        image = Image.alpha_composite(image, overlay)
+        
+        # Возвращаем в RGB
+        rgb_image = Image.new('RGB', image.size, (255, 255, 255))
+        if image.mode == 'RGBA':
+            rgb_image.paste(image, mask=image.split()[-1])
+        image = rgb_image
+        draw = ImageDraw.Draw(image)
+        
+        # Рисуем текст
+        try:
+            # Обводка
+            if outline_width > 0:
+                for dx in range(-outline_width, outline_width + 1):
+                    for dy in range(-outline_width, outline_width + 1):
+                        if dx != 0 or dy != 0:
+                            if font_to_use:
+                                draw.text((x + dx, y + dy), display_text, font=font_to_use, fill=(0, 0, 0))
+                            else:
+                                draw.text((x + dx, y + dy), display_text, fill=(0, 0, 0))
+            
+            # Основной текст
+            if font_to_use:
+                draw.text((x, y), display_text, font=font_to_use, fill=text_color)
+            else:
+                draw.text((x, y), display_text, fill=text_color)
+            
+            print(f"Successfully drew text: '{display_text}' at ({x}, {y})")
+            
+        except Exception as e:
+            print(f"Error drawing text: {e}")
+            # Fallback - рисуем простые прямоугольники
+            char_width = font_size // 3
+            current_x = x
+            for char in display_text:
+                if char != ' ':
+                    draw.rectangle([
+                        current_x, y,
+                        current_x + char_width, y + font_size
+                    ], fill=text_color)
+                current_x += char_width + 3
+        
+        # Сохраняем
+        output_buffer = io.BytesIO()
+        image.save(output_buffer, format='PNG', quality=95)
+        output_buffer.seek(0)
+        
+        result_base64 = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
+        
+        return jsonify({
+            "success": True,
+            "image": result_base64,
+            "debug": {
+                "original_text": original_text,
+                "display_text": display_text,
+                "used_cyrillic_font": cyrillic_font is not None,
+                "position": f"({x}, {y})",
+                "font_size": font_size
+            }
+        })
+        
+    except Exception as e:
+        print(f"Error in fixed_overlay: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
 def draw_text_as_shapes(draw, text, x, y, size, color):
     """Рисует текст как простые геометрические фигуры (fallback для проблем с шрифтами)"""
     char_width = size // 2
