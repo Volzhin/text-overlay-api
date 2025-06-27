@@ -34,24 +34,12 @@ def create_font(size):
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
             "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-            "/usr/share/fonts/TTF/DejaVuSans.ttf",
-            "/System/Library/Fonts/Arial Unicode MS.ttf",
-            "/System/Library/Fonts/Arial.ttf"
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
         ]
         
         for font_path in font_paths:
             try:
-                font = ImageFont.truetype(font_path, size)
-                # Проверим, поддерживает ли шрифт кириллицу
-                test_text = "Тест"
-                temp_img = Image.new('RGB', (100, 50), 'white')
-                temp_draw = ImageDraw.Draw(temp_img)
-                try:
-                    temp_draw.text((0, 0), test_text, font=font, fill='black')
-                    return font
-                except:
-                    continue
+                return ImageFont.truetype(font_path, size)
             except:
                 continue
         
@@ -72,23 +60,23 @@ def safe_text(text):
         except:
             text = text.decode('utf-8', errors='ignore')
     
-    # Заменим проблематичные символы на безопасные аналоги
-    replacements = {
-        ''': "'",
-        ''': "'",
-        '"': '"',
-        '"': '"',
-        '–': '-',
-        '—': '-',
-        '…': '...'
-    }
-    
-    for old, new in replacements.items():
-        text = text.replace(old, new)
-    
     return str(text)
 
-def wrap_text(text, font, max_width, draw):
+def get_text_size(text, font):
+    """Получить размер текста безопасно"""
+    try:
+        # Новый способ (Pillow 8.0+)
+        bbox = ImageDraw.Draw(Image.new('RGB', (1, 1))).textbbox((0, 0), text, font=font)
+        return bbox[2] - bbox[0], bbox[3] - bbox[1]
+    except:
+        try:
+            # Старый способ (Pillow < 8.0)
+            return ImageDraw.Draw(Image.new('RGB', (1, 1))).textsize(text, font=font)
+        except:
+            # Совсем простой fallback
+            return len(text) * 12, 20
+
+def wrap_text(text, font, max_width):
     """Разбить текст на строки"""
     text = safe_text(text)
     if not text:
@@ -100,14 +88,9 @@ def wrap_text(text, font, max_width, draw):
     
     for word in words:
         test_line = current_line + (' ' if current_line else '') + word
-        try:
-            bbox = draw.textbbox((0, 0), test_line, font=font)
-            line_width = bbox[2] - bbox[0]
-        except:
-            # Fallback для старых версий Pillow
-            line_width = len(test_line) * (font.size * 0.6)
+        text_width, _ = get_text_size(test_line, font)
         
-        if line_width <= max_width:
+        if text_width <= max_width:
             current_line = test_line
         else:
             if current_line:
@@ -132,12 +115,7 @@ def draw_text_with_shadow(draw, text, position, font, fill_color='white', shadow
         # Основной текст
         draw.text((x, y), text, font=font, fill=fill_color)
     except Exception as e:
-        print(f"Ошибка отрисовки текста '{text}': {e}")
-        # Попробуем без специальных символов
-        safe_text_ascii = text.encode('ascii', errors='ignore').decode('ascii')
-        if safe_text_ascii:
-            draw.text((x + 2, y + 2), safe_text_ascii, font=font, fill=shadow_color)
-            draw.text((x, y), safe_text_ascii, font=font, fill=fill_color)
+        print(f"Ошибка отрисовки текста: {e}")
 
 def generate_image(background_image, logo_text, title, subtitle, disclaimer, logo_url, format_name):
     """Генерировать изображение"""
@@ -164,7 +142,7 @@ def generate_image(background_image, logo_text, title, subtitle, disclaimer, log
     overlay = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     overlay_draw = ImageDraw.Draw(overlay)
     
-    # Простое затемнение (градиент эмулируем через прозрачность)
+    # Простое затемнение
     for y in range(height):
         alpha = int(76 + (153 - 76) * y / height)  # От 30% до 60%
         overlay_draw.rectangle([(0, y), (width, y + 1)], fill=(0, 0, 0, alpha))
@@ -176,18 +154,10 @@ def generate_image(background_image, logo_text, title, subtitle, disclaimer, log
     draw = ImageDraw.Draw(background)
     
     # Создать шрифты
-    try:
-        logo_font = create_font(font_sizes['logo_text'])
-        title_font = create_font(font_sizes['title'])
-        subtitle_font = create_font(font_sizes['subtitle'])
-        disclaimer_font = create_font(font_sizes['disclaimer'])
-    except Exception as e:
-        print(f"Ошибка создания шрифтов: {e}")
-        # Используем стандартные шрифты
-        logo_font = ImageFont.load_default()
-        title_font = ImageFont.load_default()
-        subtitle_font = ImageFont.load_default()
-        disclaimer_font = ImageFont.load_default()
+    logo_font = create_font(font_sizes['logo_text'])
+    title_font = create_font(font_sizes['title'])
+    subtitle_font = create_font(font_sizes['subtitle'])
+    disclaimer_font = create_font(font_sizes['disclaimer'])
     
     # Текущая позиция Y
     current_y = padding
@@ -220,54 +190,42 @@ def generate_image(background_image, logo_text, title, subtitle, disclaimer, log
             draw, logo_text, (padding, current_y), 
             logo_font, 'white', 'black'
         )
-        try:
-            bbox = draw.textbbox((0, 0), logo_text, font=logo_font)
-            current_y += (bbox[3] - bbox[1]) + 30
-        except:
-            current_y += font_sizes['logo_text'] + 30
+        _, text_height = get_text_size(logo_text, logo_font)
+        current_y += text_height + 30
     
     # Заголовок
     if title:
-        title_lines = wrap_text(title, title_font, text_max_width, draw)
+        title_lines = wrap_text(title, title_font, text_max_width)
         for line in title_lines:
             draw_text_with_shadow(
                 draw, line, (padding, current_y), 
                 title_font, 'white', 'black'
             )
-            try:
-                bbox = draw.textbbox((0, 0), line, font=title_font)
-                current_y += int((bbox[3] - bbox[1]) * 1.2)
-            except:
-                current_y += int(font_sizes['title'] * 1.2)
+            _, text_height = get_text_size(line, title_font)
+            current_y += int(text_height * 1.2)
         current_y += 20
     
     # Подзаголовок
     if subtitle:
-        subtitle_lines = wrap_text(subtitle, subtitle_font, text_max_width, draw)
+        subtitle_lines = wrap_text(subtitle, subtitle_font, text_max_width)
         for line in subtitle_lines:
             draw_text_with_shadow(
                 draw, line, (padding, current_y), 
                 subtitle_font, 'white', 'black'
             )
-            try:
-                bbox = draw.textbbox((0, 0), line, font=subtitle_font)
-                current_y += int((bbox[3] - bbox[1]) * 1.2)
-            except:
-                current_y += int(font_sizes['subtitle'] * 1.2)
+            _, text_height = get_text_size(line, subtitle_font)
+            current_y += int(text_height * 1.2)
         current_y += 30
     
     # Дисклеймер внизу
     if disclaimer:
-        disclaimer_lines = wrap_text(disclaimer, disclaimer_font, text_max_width, draw)
+        disclaimer_lines = wrap_text(disclaimer, disclaimer_font, text_max_width)
         
         # Рассчитать высоту дисклеймера
-        try:
-            total_disclaimer_height = 0
-            for line in disclaimer_lines:
-                bbox = draw.textbbox((0, 0), line, font=disclaimer_font)
-                total_disclaimer_height += int((bbox[3] - bbox[1]) * 1.2)
-        except:
-            total_disclaimer_height = len(disclaimer_lines) * int(font_sizes['disclaimer'] * 1.2)
+        total_disclaimer_height = 0
+        for line in disclaimer_lines:
+            _, text_height = get_text_size(line, disclaimer_font)
+            total_disclaimer_height += int(text_height * 1.2)
         
         # Позиционировать внизу
         disclaimer_y = height - padding - total_disclaimer_height
@@ -277,11 +235,8 @@ def generate_image(background_image, logo_text, title, subtitle, disclaimer, log
                 draw, line, (padding, disclaimer_y), 
                 disclaimer_font, '#CCCCCC', 'black'
             )
-            try:
-                bbox = draw.textbbox((0, 0), line, font=disclaimer_font)
-                disclaimer_y += int((bbox[3] - bbox[1]) * 1.2)
-            except:
-                disclaimer_y += int(font_sizes['disclaimer'] * 1.2)
+            _, text_height = get_text_size(line, disclaimer_font)
+            disclaimer_y += int(text_height * 1.2)
     
     return background.convert('RGB')
 
@@ -290,7 +245,7 @@ def home():
     """Главная страница"""
     return jsonify({
         'message': 'Image Generator API работает!',
-        'status': 'Production Ready with Unicode Support',
+        'status': 'Stable Version',
         'endpoints': {
             'POST /generate/<format>': 'Генерация изображения',
             'GET /formats': 'Получить доступные форматы',
@@ -319,16 +274,19 @@ def generate_image_endpoint(format_name):
         if file.filename == '':
             return jsonify({'error': 'Файл не выбран'}), 400
         
-        # Получить параметры с безопасной обработкой кодировки
-        logo_text = request.form.get('logoText', '', type=str)
-        title = request.form.get('title', '', type=str)
-        subtitle = request.form.get('subtitle', '', type=str)
-        disclaimer = request.form.get('disclaimer', '', type=str)
-        logo_url = request.form.get('logoUrl', '', type=str)
+        # Получить параметры
+        logo_text = request.form.get('logoText', '')
+        title = request.form.get('title', '')
+        subtitle = request.form.get('subtitle', '')
+        disclaimer = request.form.get('disclaimer', '')
+        logo_url = request.form.get('logoUrl', '')
+        
+        print(f"Получены параметры: logo_text='{logo_text}', title='{title}', subtitle='{subtitle}', disclaimer='{disclaimer}'")
         
         # Загрузить изображение
         try:
             background_image = Image.open(file.stream)
+            print(f"Изображение загружено: {background_image.size}, режим: {background_image.mode}")
         except Exception as e:
             return jsonify({'error': f'Ошибка обработки изображения: {str(e)}'}), 400
         
@@ -336,6 +294,8 @@ def generate_image_endpoint(format_name):
         result_image = generate_image(
             background_image, logo_text, title, subtitle, disclaimer, logo_url, format_name
         )
+        
+        print("Изображение сгенерировано успешно")
         
         # Сохранить в буфер
         img_buffer = io.BytesIO()
@@ -350,7 +310,9 @@ def generate_image_endpoint(format_name):
         )
         
     except Exception as e:
-        print(f"Ошибка: {e}")
+        print(f"Ошибка генерации: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'error': f'Ошибка генерации изображения: {str(e)}'}), 500
 
 if __name__ == '__main__':
