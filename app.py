@@ -1,504 +1,309 @@
-# app.py - Простая и надежная версия
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
-from PIL import Image, ImageDraw, ImageFont
+import skia
 import io
-import base64
 import os
 import requests
-import re
-from pathlib import Path
+from PIL import Image
+import numpy as np
 
 app = Flask(__name__)
 CORS(app)
 
-# Конфигурация
-app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024  # 32MB
-
-# Папка для шрифтов
-FONTS_DIR = Path("fonts")
-FONTS_DIR.mkdir(exist_ok=True)
-
-# Популярные Google Fonts с поддержкой кириллицы
-GOOGLE_FONTS_CYRILLIC = {
-    "roboto": "https://fonts.gstatic.com/s/roboto/v30/KFOmCnqEu92Fr1Mu72xKOzY.woff2",
-    "opensans": "https://fonts.gstatic.com/s/opensans/v40/memSYaGs126MiZpBA-UvWbX2vVnXBbObj2OVZyOOSr4dVJWUgsjZ0B4gaVc.ttf",
-    "montserrat": "https://fonts.gstatic.com/s/montserrat/v26/JTUHjIg1_i6t8kCHKm4532VJOt5-QNFgpCtr6Ew7.ttf",
-    "ptsans": "https://fonts.gstatic.com/s/ptsans/v17/jizaRExUiTo99u79D0KEwA.ttf",
-    "ptserif": "https://fonts.gstatic.com/s/ptserif/v18/EJRVQgYoZZY2vCFuvAFWzr8.ttf",
-    "playfair": "https://fonts.gstatic.com/s/playfairdisplay/v36/nuFiD-vYSZviVYUb_rj3ij__anPXDTzYgEM8.ttf",
-    "lora": "https://fonts.gstatic.com/s/lora/v32/0QIvMX1D_JOuMw_hLdO6T2wV.ttf",
-    "nunito": "https://fonts.gstatic.com/s/nunito/v26/XRXI3I6Li01BKofAjsOUb-vISTs.ttf"
+# Форматы изображений
+FORMATS = {
+    'vk-square': {'width': 600, 'height': 600},
+    'vk-portrait': {'width': 1080, 'height': 1350},
+    'vk-landscape': {'width': 1080, 'height': 607},
+    'stories': {'width': 1080, 'height': 1920}
 }
 
-def test_font_with_cyrillic(font, test_text="Тест"):
-    """Проверяет может ли шрифт отобразить кириллицу"""
-    try:
-        # Создаем тестовое изображение
-        test_img = Image.new('RGB', (200, 100), color=(255, 255, 255))
-        test_draw = ImageDraw.Draw(test_img)
-        
-        # Пробуем нарисовать кириллицу
-        test_draw.text((10, 10), test_text, font=font, fill=(0, 0, 0))
-        
-        # Проверяем что текст действительно нарисовался
-        # Простая проверка - есть ли черные пиксели
-        pixels = list(test_img.getdata())
-        has_black_pixels = any(pixel != (255, 255, 255) for pixel in pixels)
-        
-        if has_black_pixels:
-            print(f"Font passed cyrillic test")
-            return True
-        else:
-            print(f"Font failed cyrillic test - no black pixels")
-            return False
-            
-    except Exception as e:
-        print(f"Font failed cyrillic test - exception: {e}")
-        return False
+def get_font_sizes(format_name):
+    """Получить размеры шрифтов для формата"""
+    if format_name == 'vk-square':
+        return {
+            'logo_text': 52,
+            'title': 42,
+            'subtitle': 24,
+            'disclaimer': 16,
+            'padding': 40
+        }
+    elif format_name == 'vk-portrait':
+        return {
+            'logo_text': 72,
+            'title': 64,
+            'subtitle': 36,
+            'disclaimer': 24,
+            'padding': 60
+        }
+    elif format_name == 'vk-landscape':
+        return {
+            'logo_text': 58,
+            'title': 48,
+            'subtitle': 28,
+            'disclaimer': 20,
+            'padding': 50
+        }
+    elif format_name == 'stories':
+        return {
+            'logo_text': 68,
+            'title': 56,
+            'subtitle': 32,
+            'disclaimer': 22,
+            'padding': 60
+        }
 
-def download_google_font(font_name, font_size):
-    """Скачивает Google Font если нужен"""
-    if not font_name:
-        return None
-        
-    font_name_lower = font_name.lower().replace(' ', '').replace('-', '')
-    
-    # Проверяем есть ли в предустановленных
-    if font_name_lower in GOOGLE_FONTS_CYRILLIC:
-        font_url = GOOGLE_FONTS_CYRILLIC[font_name_lower]
-        
-        # Путь для сохранения
-        font_path = FONTS_DIR / f"{font_name_lower}.ttf"
-        
-        # Скачиваем если еще нет
-        if not font_path.exists():
-            try:
-                print(f"Downloading Google Font: {font_name}")
-                headers = {'User-Agent': 'Mozilla/5.0 (compatible)'}
-                response = requests.get(font_url, headers=headers, timeout=10)
-                
-                if response.status_code == 200:
-                    with open(font_path, 'wb') as f:
-                        f.write(response.content)
-                    print(f"Font saved: {font_path}")
-                else:
-                    print(f"Failed to download: {response.status_code}")
-                    return None
-            except Exception as e:
-                print(f"Download error: {e}")
-                return None
-        
-        # Загружаем шрифт
-        try:
-            font = ImageFont.truetype(str(font_path), font_size)
-            
-            # ВАЖНО: Проверяем что шрифт может отображать кириллицу
-            if test_font_with_cyrillic(font):
-                print(f"Loaded Google Font with Cyrillic: {font_name}")
-                return font
-            else:
-                print(f"Google Font {font_name} doesn't support Cyrillic")
-                return None
-                
-        except Exception as e:
-            print(f"Font load error: {e}")
-            return None
-    
-    return None
+def create_typeface(bold=False):
+    """Создать шрифт"""
+    style = skia.FontStyle.Bold() if bold else skia.FontStyle.Normal()
+    return skia.Typeface('Arial', style)
 
-def get_safe_font(font_size):
-    """Получение безопасного шрифта"""
-    # Системные шрифты с кириллицей
-    font_paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"
-    ]
+def wrap_text(canvas, text, font, max_width):
+    """Разбить текст на строки"""
+    if not text:
+        return []
     
-    for font_path in font_paths:
-        if os.path.exists(font_path):
-            try:
-                font = ImageFont.truetype(font_path, font_size)
-                
-                # Проверяем поддержку кириллицы
-                if test_font_with_cyrillic(font):
-                    print(f"Using system font with Cyrillic: {font_path}")
-                    return font
-                else:
-                    print(f"System font {font_path} doesn't support Cyrillic")
-                    continue
-                    
-            except:
-                continue
-    
-    # Fallback
-    try:
-        return ImageFont.load_default()
-    except:
-        return None
-
-def transliterate(text):
-    """Простая транслитерация кириллицы"""
-    cyrillic = "абвгдеёжзийклмнопрстуфхцчшщъыьэюяАБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
-    latin = "abvgdeezziyklmnoprstufhcchshsch'y'euyaABVGDEEZZIYKLMNOPRSTUFHCCHSHSCH'Y'EUYA"
-    
-    result = ""
-    for char in text:
-        if char in cyrillic:
-            index = cyrillic.index(char)
-            result += latin[index]
-        else:
-            result += char
-    return result
-
-def wrap_text(text, max_width, font_size):
-    """Простое разбиение текста на строки"""
-    words = text.split()
+    words = text.split(' ')
     lines = []
-    current_line = []
-    
-    # Приблизительная ширина символа
-    char_width = font_size * 0.6
-    chars_per_line = int(max_width / char_width)
+    current_line = ''
     
     for word in words:
-        test_line = ' '.join(current_line + [word])
-        if len(test_line) <= chars_per_line:
-            current_line.append(word)
+        test_line = current_line + (' ' if current_line else '') + word
+        text_width = font.measureText(test_line)
+        
+        if text_width <= max_width:
+            current_line = test_line
         else:
             if current_line:
-                lines.append(' '.join(current_line))
-            current_line = [word]
+                lines.append(current_line)
+            current_line = word
     
     if current_line:
-        lines.append(' '.join(current_line))
+        lines.append(current_line)
     
     return lines
 
-@app.route('/', methods=['GET'])
-def home():
-    """API информация"""
-    return jsonify({
-        "service": "Simple Text Overlay API",
-        "version": "1.0.0",
-        "status": "running",
-        "endpoints": {
-            "POST /overlay": "Простое наложение текста",
-            "GET /health": "Статус сервиса"
-        }
-    })
+def draw_text_with_shadow(canvas, text, x, y, font, color, shadow_color):
+    """Нарисовать текст с тенью"""
+    # Тень
+    shadow_paint = skia.Paint(
+        AntiAlias=True,
+        Color=shadow_color
+    )
+    canvas.drawString(text, x + 2, y + 2, font, shadow_paint)
+    
+    # Основной текст
+    main_paint = skia.Paint(
+        AntiAlias=True,
+        Color=color
+    )
+    canvas.drawString(text, x, y, font, main_paint)
 
-@app.route('/overlay', methods=['POST'])
-def overlay_text():
-    """Основной endpoint наложения текста"""
-    try:
-        data = request.get_json(force=True)
-        
-        if not data or 'image' not in data:
-            return jsonify({"error": "Поле 'image' обязательно"}), 400
-        
-        if 'text' not in data or not str(data['text']).strip():
-            return jsonify({"error": "Поле 'text' обязательно"}), 400
-        
-        # Декодируем изображение
-        image_data = data['image']
-        if image_data.startswith('data:image'):
-            header, encoded = image_data.split(',', 1)
-            image_bytes = base64.b64decode(encoded)
-        else:
-            image_bytes = base64.b64decode(image_data)
-        
-        # Открываем изображение
-        from PIL import ImageFile
-        ImageFile.LOAD_TRUNCATED_IMAGES = True
-        
-        image = Image.open(io.BytesIO(image_bytes))
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-        
-        draw = ImageDraw.Draw(image)
-        width, height = image.size
-        
-        # Параметры
-        original_text = str(data.get('text', 'ТЕКСТ'))
-        font_size = data.get('fontSize', min(width, height) // 15)
-        position = data.get('position', 'bottom')  # top, center, bottom
-        font_family = data.get('fontFamily', None)  # Новый параметр для Google Fonts
-        
-        # Цвета
-        text_color = tuple(data.get('textColor', [255, 255, 255]))[:3]
-        bg_color = tuple(data.get('backgroundColor', [0, 0, 0, 180]))
-        outline_width = data.get('outlineWidth', 2)
-        
-        print(f"Processing: '{original_text}' on {width}x{height}")
-        if font_family:
-            print(f"Requested font: {font_family}")
-        
-        # Получаем шрифт (сначала пробуем Google Font)
-        font = None
-        used_google_font = False
-        
-        if font_family:
-            font = download_google_font(font_family, font_size)
-            if font:
-                used_google_font = True
-        
-        if not font:
-            font = get_safe_font(font_size)
-        
-        # Определяем текст для отображения
-        display_text = original_text
-        font_works = True
-        
-        # Проверяем есть ли кириллица в тексте
-        has_cyrillic = any(ord(c) > 127 and ord(c) < 1200 for c in original_text)
-        
-        if has_cyrillic:
-            print(f"Text contains Cyrillic characters")
-            
-            # Если есть кириллица, проверяем что шрифт может её отобразить
-            if font and not test_font_with_cyrillic(font, original_text):
-                print("Font cannot display Cyrillic, using transliteration")
-                font_works = False
-                display_text = transliterate(original_text)
-            elif not font:
-                print("No font available, using transliteration")
-                font_works = False
-                display_text = transliterate(original_text)
-        else:
-            print(f"Text is Latin/ASCII")
-        
-        print(f"Final display text: '{display_text}'")
-        
-        # Разбиваем текст на строки
-        max_text_width = width - (width // 10)  # 90% ширины
-        lines = wrap_text(display_text, max_text_width, font_size)
-        
-        # Вычисляем размеры
-        line_height = font_size * 1.2
-        total_height = len(lines) * line_height
-        max_line_width = max(len(line) for line in lines) * font_size * 0.6
-        
-        # Позиция
-        margin = max(20, min(width, height) // 30)
-        
-        if position == 'top':
-            start_y = margin
-        elif position == 'bottom':
-            start_y = height - margin - total_height
-        else:  # center
-            start_y = (height - total_height) // 2
-        
-        start_x = (width - max_line_width) // 2
-        
-        # Рисуем фон
-        padding = max(15, font_size // 4)
-        bg_rect = [
-            max(0, start_x - padding),
-            max(0, start_y - padding),
-            min(width, start_x + max_line_width + padding),
-            min(height, start_y + total_height + padding)
-        ]
-        
-        # Полупрозрачный фон
-        if len(bg_color) >= 4:
-            overlay = Image.new('RGBA', image.size, (0, 0, 0, 0))
-            overlay_draw = ImageDraw.Draw(overlay)
-            overlay_draw.rounded_rectangle(bg_rect, radius=padding//2, fill=bg_color)
-            
-            image = image.convert('RGBA')
-            image = Image.alpha_composite(image, overlay)
-            image = image.convert('RGB')
-            draw = ImageDraw.Draw(image)
-        else:
-            draw.rounded_rectangle(bg_rect, radius=padding//2, fill=bg_color[:3])
-        
-        # Рисуем текст
-        current_y = start_y
-        
-        for line in lines:
-            if not line.strip():
-                current_y += line_height
-                continue
-            
-            line_width = len(line) * font_size * 0.6
-            line_x = (width - line_width) // 2
-            
-            try:
-                # Обводка
-                if outline_width > 0:
-                    for dx in range(-outline_width, outline_width + 1):
-                        for dy in range(-outline_width, outline_width + 1):
-                            if dx != 0 or dy != 0:
-                                if font:
-                                    draw.text((line_x + dx, current_y + dy), line, font=font, fill=(0, 0, 0))
-                                else:
-                                    draw.text((line_x + dx, current_y + dy), line, fill=(0, 0, 0))
-                
-                # Основной текст
-                if font:
-                    draw.text((line_x, current_y), line, font=font, fill=text_color)
-                else:
-                    draw.text((line_x, current_y), line, fill=text_color)
-                
-                print(f"Drew: '{line}' at ({line_x}, {current_y})")
-                
-            except Exception as e:
-                print(f"Error drawing line: {e}")
-                # Fallback - простые прямоугольники
-                char_width = font_size // 3
-                rect_x = line_x
-                for char in line:
-                    if char != ' ':
-                        draw.rectangle([rect_x, current_y, rect_x + char_width, current_y + font_size], fill=text_color)
-                    rect_x += char_width + 3
-            
-            current_y += line_height
-        
-        # Сохраняем
-        output_buffer = io.BytesIO()
-        image.save(output_buffer, format='PNG', quality=95)
-        output_buffer.seek(0)
-        
-        result_base64 = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
-        
-        return jsonify({
-            "success": True,
-            "image": result_base64,
-            "debug": {
-                "original_text": original_text,
-                "display_text": display_text,
-                "font_works": font_works,
-                "used_google_font": used_google_font,
-                "requested_font": font_family,
-                "lines": lines,
-                "image_size": f"{width}x{height}"
-            }
-        })
-        
-    except Exception as e:
-        print(f"Error: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/test-cyrillic', methods=['POST'])
-def test_cyrillic():
-    """Тестирует отображение кириллицы"""
-    try:
-        data = request.get_json(force=True)
-        font_name = data.get('fontFamily', None)
-        test_text = data.get('text', 'Тест кириллицы АБВ 123')
-        font_size = 48
-        
-        # Создаем тестовое изображение
-        test_img = Image.new('RGB', (600, 200), color=(255, 255, 255))
-        test_draw = ImageDraw.Draw(test_img)
-        
-        results = {}
-        y_position = 20
-        
-        # Тестируем Google Font
-        if font_name:
-            google_font = download_google_font(font_name, font_size)
-            if google_font:
-                cyrillic_works = test_font_with_cyrillic(google_font, test_text)
-                results[f"google_{font_name}"] = cyrillic_works
-                
-                try:
-                    test_draw.text((20, y_position), f"Google {font_name}: {test_text}", 
-                                 font=google_font, fill=(0, 0, 0))
-                    y_position += 50
-                except:
-                    test_draw.text((20, y_position), f"Google {font_name}: ERROR", 
-                                 fill=(255, 0, 0))
-                    y_position += 50
-        
-        # Тестируем системный шрифт
-        system_font = get_safe_font(font_size)
-        if system_font:
-            cyrillic_works = test_font_with_cyrillic(system_font, test_text)
-            results["system_font"] = cyrillic_works
-            
-            try:
-                test_draw.text((20, y_position), f"System: {test_text}", 
-                             font=system_font, fill=(0, 0, 0))
-                y_position += 50
-            except:
-                test_draw.text((20, y_position), f"System: ERROR", fill=(255, 0, 0))
-                y_position += 50
-        
-        # Тестируем без шрифта
+def generate_image(background_image, logo_text, title, subtitle, disclaimer, logo_url, format_name):
+    """Генерировать изображение с Canvas"""
+    if format_name not in FORMATS:
+        raise ValueError(f"Неподдерживаемый формат: {format_name}")
+    
+    # Получить размеры
+    target_size = FORMATS[format_name]
+    width, height = target_size['width'], target_size['height']
+    font_sizes = get_font_sizes(format_name)
+    padding = font_sizes['padding']
+    
+    # Создать Canvas
+    surface = skia.Surface(width, height)
+    canvas = surface.getCanvas()
+    
+    # Изменить размер фонового изображения
+    background_resized = background_image.resize((width, height), Image.Resampling.LANCZOS)
+    
+    # Конвертировать PIL в numpy array
+    bg_array = np.array(background_resized)
+    
+    # Создать Skia изображение из numpy array
+    bg_info = skia.ImageInfo.MakeN32Premul(width, height)
+    bg_skia = skia.Image.fromarray(bg_array, colorType=skia.kRGBA_8888_ColorType)
+    
+    # Нарисовать фон
+    canvas.drawImage(bg_skia, 0, 0)
+    
+    # Создать градиентное затемнение
+    gradient_colors = [
+        skia.Color4f(0, 0, 0, 0.3),  # Верх
+        skia.Color4f(0, 0, 0, 0.6)   # Низ
+    ]
+    gradient = skia.GradientShader.MakeLinear(
+        points=[(0, 0), (0, height)],
+        colors=gradient_colors
+    )
+    
+    overlay_paint = skia.Paint(Shader=gradient)
+    canvas.drawRect(skia.Rect(0, 0, width, height), overlay_paint)
+    
+    # Создать шрифты
+    logo_typeface = create_typeface(bold=True)
+    title_typeface = create_typeface(bold=True)
+    subtitle_typeface = create_typeface(bold=False)
+    disclaimer_typeface = create_typeface(bold=False)
+    
+    logo_font = skia.Font(logo_typeface, font_sizes['logo_text'])
+    title_font = skia.Font(title_typeface, font_sizes['title'])
+    subtitle_font = skia.Font(subtitle_typeface, font_sizes['subtitle'])
+    disclaimer_font = skia.Font(disclaimer_typeface, font_sizes['disclaimer'])
+    
+    # Цвета
+    white_color = skia.Color4f(1, 1, 1, 1)
+    gray_color = skia.Color4f(0.8, 0.8, 0.8, 1)
+    shadow_color = skia.Color4f(0, 0, 0, 0.8)
+    light_shadow_color = skia.Color4f(0, 0, 0, 0.5)
+    
+    # Текущая позиция Y
+    current_y = padding
+    text_max_width = width - (padding * 2)
+    
+    # Загрузка логотипа-изображения (если есть)
+    if logo_url:
         try:
-            test_draw.text((20, y_position), f"Default: {test_text}", fill=(0, 0, 0))
-            y_position += 50
-            results["default_font"] = True
-        except:
-            test_draw.text((20, y_position), f"Default: ERROR", fill=(255, 0, 0))
-            results["default_font"] = False
-            y_position += 50
+            response = requests.get(logo_url, timeout=5)
+            if response.status_code == 200:
+                logo_image = Image.open(io.BytesIO(response.content))
+                logo_size = 80 if format_name == 'vk-square' else 120
+                
+                # Изменить размер логотипа
+                logo_aspect = logo_image.width / logo_image.height
+                logo_width = logo_size
+                logo_height = int(logo_size / logo_aspect)
+                
+                logo_resized = logo_image.resize((logo_width, logo_height), Image.Resampling.LANCZOS)
+                logo_array = np.array(logo_resized.convert('RGBA'))
+                logo_skia = skia.Image.fromarray(logo_array, colorType=skia.kRGBA_8888_ColorType)
+                
+                canvas.drawImage(logo_skia, padding, current_y)
+                current_y += logo_height + 30
+        except Exception as e:
+            print(f"Ошибка загрузки логотипа: {e}")
+    
+    # Логотип-текст (например "YANGO")
+    if logo_text:
+        draw_text_with_shadow(
+            canvas, logo_text, padding, current_y + font_sizes['logo_text'],
+            logo_font, white_color, shadow_color
+        )
+        current_y += int(font_sizes['logo_text'] * 1.2) + 30
+    
+    # Заголовок
+    if title:
+        title_lines = wrap_text(canvas, title, title_font, text_max_width)
+        for line in title_lines:
+            draw_text_with_shadow(
+                canvas, line, padding, current_y + font_sizes['title'],
+                title_font, white_color, light_shadow_color
+            )
+            current_y += int(font_sizes['title'] * 1.2)
+        current_y += 20
+    
+    # Подзаголовок
+    if subtitle:
+        subtitle_lines = wrap_text(canvas, subtitle, subtitle_font, text_max_width)
+        for line in subtitle_lines:
+            draw_text_with_shadow(
+                canvas, line, padding, current_y + font_sizes['subtitle'],
+                subtitle_font, white_color, light_shadow_color
+            )
+            current_y += int(font_sizes['subtitle'] * 1.2)
+        current_y += 30
+    
+    # Дисклеймер внизу
+    if disclaimer:
+        disclaimer_lines = wrap_text(canvas, disclaimer, disclaimer_font, text_max_width)
         
-        # Транслитерация
-        transliterated = transliterate(test_text)
-        test_draw.text((20, y_position), f"Transliterated: {transliterated}", fill=(0, 0, 0))
-        results["transliteration"] = transliterated
+        # Рассчитать высоту дисклеймера
+        total_disclaimer_height = len(disclaimer_lines) * int(font_sizes['disclaimer'] * 1.2)
         
-        # Сохраняем результат
-        output_buffer = io.BytesIO()
-        test_img.save(output_buffer, format='PNG')
-        output_buffer.seek(0)
+        # Позиционировать внизу
+        disclaimer_y = height - padding - total_disclaimer_height + font_sizes['disclaimer']
         
-        result_base64 = base64.b64encode(output_buffer.getvalue()).decode('utf-8')
+        for line in disclaimer_lines:
+            draw_text_with_shadow(
+                canvas, line, padding, disclaimer_y,
+                disclaimer_font, gray_color, light_shadow_color
+            )
+            disclaimer_y += int(font_sizes['disclaimer'] * 1.2)
+    
+    # Получить изображение
+    image = surface.makeImageSnapshot()
+    
+    # Конвертировать в PNG
+    png_data = image.encodeToData(skia.kPNG)
+    
+    return png_data.data()
+
+@app.route('/')
+def home():
+    """Главная страница"""
+    return jsonify({
+        'message': 'Image Generator API с Canvas работает!',
+        'version': 'Python + Skia Canvas',
+        'endpoints': {
+            'POST /generate/<format>': 'Генерация изображения',
+            'GET /formats': 'Получить доступные форматы',
+            'GET /': 'Проверка работоспособности'
+        },
+        'formats': list(FORMATS.keys())
+    })
+
+@app.route('/formats')
+def get_formats():
+    """Получить доступные форматы"""
+    return jsonify(FORMATS)
+
+@app.route('/generate/<format_name>', methods=['POST'])
+def generate_image_endpoint(format_name):
+    """Генерировать изображение"""
+    try:
+        if format_name not in FORMATS:
+            return jsonify({'error': 'Неподдерживаемый формат'}), 400
         
-        return jsonify({
-            "success": True,
-            "image": result_base64,
-            "test_results": results,
-            "test_text": test_text
-        })
+        # Проверить наличие изображения
+        if 'image' not in request.files:
+            return jsonify({'error': 'Изображение не загружено'}), 400
+        
+        file = request.files['image']
+        if file.filename == '':
+            return jsonify({'error': 'Файл не выбран'}), 400
+        
+        # Получить параметры
+        logo_text = request.form.get('logoText', '')
+        title = request.form.get('title', '')
+        subtitle = request.form.get('subtitle', '')
+        disclaimer = request.form.get('disclaimer', '')
+        logo_url = request.form.get('logoUrl', '')
+        
+        # Загрузить изображение
+        try:
+            background_image = Image.open(file.stream).convert('RGBA')
+        except Exception as e:
+            return jsonify({'error': f'Ошибка обработки изображения: {str(e)}'}), 400
+        
+        # Генерировать изображение
+        png_data = generate_image(
+            background_image, logo_text, title, subtitle, disclaimer, logo_url, format_name
+        )
+        
+        # Создать буфер
+        img_buffer = io.BytesIO(png_data)
+        img_buffer.seek(0)
+        
+        return send_file(
+            img_buffer,
+            mimetype='image/png',
+            as_attachment=True,
+            download_name=f'generated-{format_name}.png'
+        )
         
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/fonts', methods=['GET'])
-def available_fonts():
-    """Список доступных Google Fonts для основного endpoint"""
-    return jsonify({
-        "available_google_fonts": list(GOOGLE_FONTS_CYRILLIC.keys()),
-        "usage": "Добавьте параметр 'fontFamily' в запрос к /overlay",
-        "examples": {
-            "roboto": "Roboto",
-            "opensans": "Open Sans", 
-            "montserrat": "Montserrat",
-            "ptsans": "PT Sans",
-            "ptserif": "PT Serif",
-            "playfair": "Playfair Display",
-            "lora": "Lora",
-            "nunito": "Nunito"
-        }
-    })
-
-@app.route('/health', methods=['GET'])
-def health():
-    """Проверка здоровья"""
-    return jsonify({
-        "status": "healthy",
-        "version": "1.0.0"
-    })
-
-# Обработчики ошибок
-@app.errorhandler(413)
-def too_large(e):
-    return jsonify({"error": "Файл слишком большой (макс 32MB)"}), 413
-
-@app.errorhandler(404)
-def not_found(e):
-    return jsonify({"error": "Endpoint не найден"}), 404
-
-@app.errorhandler(500)
-def internal_error(e):
-    return jsonify({"error": "Внутренняя ошибка сервера"}), 500
+        return jsonify({'error': f'Ошибка генерации изображения: {str(e)}'}), 500
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 3000))
     app.run(host='0.0.0.0', port=port, debug=False)
