@@ -1,11 +1,9 @@
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
-import skia
+from PIL import Image, ImageDraw, ImageFont
 import io
 import os
 import requests
-from PIL import Image
-import numpy as np
 
 app = Flask(__name__)
 CORS(app)
@@ -59,40 +57,79 @@ def calculate_adaptive_font_sizes(width, height):
     
     return adaptive_fonts
 
-def create_typeface(bold=False):
-    """Создать шрифт с поддержкой кириллицы"""
-    try:
-        if bold:
-            return skia.Typeface('DejaVu Sans', skia.FontStyle.Bold())
-        else:
-            return skia.Typeface('DejaVu Sans', skia.FontStyle.Normal())
-    except:
+def create_font_unicode(size, bold=False):
+    """Создать шрифт с максимальной поддержкой Unicode"""
+    # Список шрифтов с хорошей поддержкой кириллицы
+    font_paths = [
+        # Linux (Railway/Docker)
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        
+        # Альтернативные пути
+        "/System/Library/Fonts/Arial Unicode MS.ttf",
+        "/System/Library/Fonts/Arial.ttf",
+        
+        # Fallback
+        "arial.ttf",
+        "DejaVuSans.ttf"
+    ]
+    
+    for font_path in font_paths:
         try:
-            # Fallback на системные шрифты
-            if bold:
-                return skia.Typeface('Arial', skia.FontStyle.Bold())
-            else:
-                return skia.Typeface('Arial', skia.FontStyle.Normal())
-        except:
-            # Последний fallback
-            return skia.Typeface()
+            font = ImageFont.truetype(font_path, size)
+            # Тестируем кириллицу
+            test_img = Image.new('RGB', (100, 50), 'white')
+            test_draw = ImageDraw.Draw(test_img)
+            test_draw.text((0, 0), "Тест кириллицы", font=font, fill='black')
+            print(f"Успешно загружен шрифт: {font_path}")
+            return font
+        except Exception as e:
+            print(f"Не удалось загрузить шрифт {font_path}: {e}")
+            continue
+    
+    # Если ничего не найдено, используем дефолтный
+    print("Используется дефолтный шрифт")
+    return ImageFont.load_default()
 
-def safe_text(text):
-    """Безопасная обработка текста для Unicode"""
+def safe_text_unicode(text):
+    """Максимально безопасная обработка Unicode текста"""
     if not text:
         return ""
     
+    # Если байты, декодируем
     if isinstance(text, bytes):
         try:
             text = text.decode('utf-8')
-        except:
-            text = text.decode('utf-8', errors='replace')
+        except UnicodeDecodeError:
+            try:
+                text = text.decode('cp1251')  # Windows кодировка
+            except UnicodeDecodeError:
+                text = text.decode('utf-8', errors='replace')
     
-    return str(text)
+    # Убираем управляющие символы
+    text = ''.join(char for char in text if ord(char) >= 32 or char in '\n\r\t')
+    
+    return str(text).strip()
 
-def wrap_text_canvas(canvas, text, font, max_width):
-    """Разбить текст на строки для Canvas"""
-    text = safe_text(text)
+def get_text_dimensions(text, font):
+    """Получить размеры текста безопасно"""
+    try:
+        # Новый способ для современной Pillow
+        bbox = ImageDraw.Draw(Image.new('RGB', (1, 1))).textbbox((0, 0), text, font=font)
+        return bbox[2] - bbox[0], bbox[3] - bbox[1]
+    except AttributeError:
+        try:
+            # Старый способ для совместимости
+            return ImageDraw.Draw(Image.new('RGB', (1, 1))).textsize(text, font=font)
+        except:
+            # Примерный расчет
+            char_width = font.size * 0.6 if hasattr(font, 'size') else 12
+            return len(text) * char_width, font.size if hasattr(font, 'size') else 20
+
+def wrap_text_smart(text, font, max_width):
+    """Умная разбивка текста на строки"""
+    text = safe_text_unicode(text)
     if not text:
         return []
     
@@ -102,7 +139,7 @@ def wrap_text_canvas(canvas, text, font, max_width):
     
     for word in words:
         test_line = current_line + (' ' if current_line else '') + word
-        text_width = font.measureText(test_line)
+        text_width, _ = get_text_dimensions(test_line, font)
         
         if text_width <= max_width:
             current_line = test_line
@@ -110,93 +147,87 @@ def wrap_text_canvas(canvas, text, font, max_width):
             if current_line:
                 lines.append(current_line)
             current_line = word
+            
+            # Если одно слово слишком длинное, разбиваем его
+            while current_line:
+                test_width, _ = get_text_dimensions(current_line, font)
+                if test_width <= max_width:
+                    break
+                # Разбиваем слово пополам
+                split_point = len(current_line) // 2
+                lines.append(current_line[:split_point] + '-')
+                current_line = current_line[split_point:]
     
     if current_line:
         lines.append(current_line)
     
     return lines
 
-def draw_text_with_shadow_canvas(canvas, text, x, y, font, color, shadow_color, shadow_offset=2):
-    """Нарисовать текст с тенью на Canvas"""
-    text = safe_text(text)
+def draw_text_with_outline(draw, text, position, font, fill_color='white', outline_color='black', outline_width=2):
+    """Нарисовать текст с контуром для лучшей читаемости"""
+    text = safe_text_unicode(text)
     if not text:
         return
+        
+    x, y = position
     
-    # Создаем краски
-    shadow_paint = skia.Paint(
-        AntiAlias=True,
-        Color=shadow_color
-    )
-    
-    main_paint = skia.Paint(
-        AntiAlias=True,
-        Color=color
-    )
-    
-    # Рисуем тень
-    canvas.drawString(text, x + shadow_offset, y + shadow_offset, font, shadow_paint)
-    
-    # Рисуем основной текст
-    canvas.drawString(text, x, y, font, main_paint)
+    try:
+        # Рисуем контур (несколько раз со смещением)
+        for dx in range(-outline_width, outline_width + 1):
+            for dy in range(-outline_width, outline_width + 1):
+                if dx != 0 or dy != 0:
+                    draw.text((x + dx, y + dy), text, font=font, fill=outline_color)
+        
+        # Рисуем основной текст
+        draw.text((x, y), text, font=font, fill=fill_color)
+        
+    except Exception as e:
+        print(f"Ошибка отрисовки текста '{text}': {e}")
+        # Fallback - простая тень
+        try:
+            draw.text((x + 2, y + 2), text, font=font, fill=outline_color)
+            draw.text((x, y), text, font=font, fill=fill_color)
+        except:
+            print("Критическая ошибка отрисовки текста")
 
-def generate_image_canvas(background_image, logo_text, title, subtitle, disclaimer, logo_url, width, height):
-    """Генерировать изображение с Canvas"""
+def generate_image_adaptive(background_image, logo_text, title, subtitle, disclaimer, logo_url, width, height):
+    """Генерировать изображение с адаптивным масштабированием"""
     
-    # Безопасная обработка текстов
-    logo_text = safe_text(logo_text)
-    title = safe_text(title)
-    subtitle = safe_text(subtitle)
-    disclaimer = safe_text(disclaimer)
+    # Безопасная обработка всех текстов
+    logo_text = safe_text_unicode(logo_text)
+    title = safe_text_unicode(title)
+    subtitle = safe_text_unicode(subtitle)
+    disclaimer = safe_text_unicode(disclaimer)
     
     # Вычисляем адаптивные размеры шрифтов
     font_sizes = calculate_adaptive_font_sizes(width, height)
     padding = font_sizes['padding']
     
-    print(f"Canvas: Генерируем {width}x{height}, шрифты: {font_sizes}")
-    
-    # Создаем Canvas surface
-    surface = skia.Surface(width, height)
-    canvas = surface.getCanvas()
+    print(f"Генерируем {width}x{height}, шрифты: {font_sizes}")
+    print(f"Тексты: logo='{logo_text}', title='{title}', subtitle='{subtitle}', disclaimer='{disclaimer}'")
     
     # Изменяем размер фонового изображения
-    background_resized = background_image.resize((width, height), Image.Resampling.LANCZOS)
+    background = background_image.resize((width, height), Image.Resampling.LANCZOS)
+    background = background.convert('RGBA')
     
-    # Конвертируем PIL в numpy array, затем в Skia Image
-    bg_array = np.array(background_resized.convert('RGBA'))
-    bg_skia = skia.Image.fromarray(bg_array, colorType=skia.kRGBA_8888_ColorType)
+    # Создаем затемняющий слой
+    overlay = Image.new('RGBA', (width, height), (0, 0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
     
-    # Рисуем фон
-    canvas.drawImage(bg_skia, 0, 0)
+    # Градиентное затемнение
+    for y in range(height):
+        alpha = int(76 + (153 - 76) * y / height)  # От 30% до 60%
+        overlay_draw.rectangle([(0, y), (width, y + 1)], fill=(0, 0, 0, alpha))
     
-    # Создаем градиентное затемнение
-    gradient_colors = [
-        skia.Color4f(0, 0, 0, 0.3),  # Верх
-        skia.Color4f(0, 0, 0, 0.6)   # Низ
-    ]
-    gradient = skia.GradientShader.MakeLinear(
-        points=[(0, 0), (0, height)],
-        colors=gradient_colors
-    )
-    
-    overlay_paint = skia.Paint(Shader=gradient)
-    canvas.drawRect(skia.Rect(0, 0, width, height), overlay_paint)
+    # Накладываем затемнение
+    background = Image.alpha_composite(background, overlay)
+    draw = ImageDraw.Draw(background)
     
     # Создаем шрифты с адаптивными размерами
-    logo_typeface = create_typeface(bold=True)
-    title_typeface = create_typeface(bold=True)
-    subtitle_typeface = create_typeface(bold=False)
-    disclaimer_typeface = create_typeface(bold=False)
-    
-    logo_font = skia.Font(logo_typeface, font_sizes['logo_text'])
-    title_font = skia.Font(title_typeface, font_sizes['title'])
-    subtitle_font = skia.Font(subtitle_typeface, font_sizes['subtitle'])
-    disclaimer_font = skia.Font(disclaimer_typeface, font_sizes['disclaimer'])
-    
-    # Цвета
-    white_color = skia.Color4f(1, 1, 1, 1)
-    gray_color = skia.Color4f(0.8, 0.8, 0.8, 1)
-    shadow_color = skia.Color4f(0, 0, 0, 0.8)
-    light_shadow_color = skia.Color4f(0, 0, 0, 0.5)
+    logo_font = create_font_unicode(font_sizes['logo_text'], bold=True)
+    title_font = create_font_unicode(font_sizes['title'], bold=True)
+    subtitle_font = create_font_unicode(font_sizes['subtitle'], bold=False)
+    disclaimer_font = create_font_unicode(font_sizes['disclaimer'], bold=False)
     
     current_y = padding
     text_max_width = width - (padding * 2)
@@ -206,89 +237,94 @@ def generate_image_canvas(background_image, logo_text, title, subtitle, disclaim
         try:
             response = requests.get(logo_url, timeout=5)
             if response.status_code == 200:
-                logo_pil = Image.open(io.BytesIO(response.content))
+                logo_image = Image.open(io.BytesIO(response.content))
                 logo_size = int(width * 0.12)  # 12% от ширины
                 
-                logo_pil.thumbnail((logo_size, logo_size), Image.Resampling.LANCZOS)
-                logo_array = np.array(logo_pil.convert('RGBA'))
-                logo_skia = skia.Image.fromarray(logo_array, colorType=skia.kRGBA_8888_ColorType)
+                logo_image.thumbnail((logo_size, logo_size), Image.Resampling.LANCZOS)
                 
-                canvas.drawImage(logo_skia, padding, current_y)
-                current_y += logo_skia.height() + int(padding * 0.5)
+                if logo_image.mode == 'RGBA':
+                    background.paste(logo_image, (padding, current_y), logo_image)
+                else:
+                    background.paste(logo_image, (padding, current_y))
+                
+                current_y += logo_image.height + int(padding * 0.5)
         except Exception as e:
             print(f"Ошибка загрузки логотипа: {e}")
     
     # Логотип-текст (например "YANGO")
     if logo_text:
-        shadow_offset = max(2, font_sizes['logo_text'] // 20)
-        draw_text_with_shadow_canvas(
-            canvas, logo_text, padding, current_y + font_sizes['logo_text'],
-            logo_font, white_color, shadow_color, shadow_offset
+        outline_width = max(2, font_sizes['logo_text'] // 20)
+        draw_text_with_outline(
+            draw, logo_text, (padding, current_y), 
+            logo_font, 'white', 'black', outline_width
         )
-        current_y += int(font_sizes['logo_text'] * 1.2) + int(padding * 0.5)
+        _, text_height = get_text_dimensions(logo_text, logo_font)
+        current_y += int(text_height * 1.2) + int(padding * 0.5)
     
     # Заголовок
     if title:
-        title_lines = wrap_text_canvas(canvas, title, title_font, text_max_width)
-        shadow_offset = max(1, font_sizes['title'] // 25)
+        title_lines = wrap_text_smart(title, title_font, text_max_width)
+        outline_width = max(1, font_sizes['title'] // 30)
         
         for line in title_lines:
-            draw_text_with_shadow_canvas(
-                canvas, line, padding, current_y + font_sizes['title'],
-                title_font, white_color, light_shadow_color, shadow_offset
+            draw_text_with_outline(
+                draw, line, (padding, current_y), 
+                title_font, 'white', 'black', outline_width
             )
-            current_y += int(font_sizes['title'] * 1.2)
+            _, text_height = get_text_dimensions(line, title_font)
+            current_y += int(text_height * 1.2)
         current_y += int(padding * 0.3)
     
     # Подзаголовок
     if subtitle:
-        subtitle_lines = wrap_text_canvas(canvas, subtitle, subtitle_font, text_max_width)
-        shadow_offset = max(1, font_sizes['subtitle'] // 30)
+        subtitle_lines = wrap_text_smart(subtitle, subtitle_font, text_max_width)
+        outline_width = max(1, font_sizes['subtitle'] // 35)
         
         for line in subtitle_lines:
-            draw_text_with_shadow_canvas(
-                canvas, line, padding, current_y + font_sizes['subtitle'],
-                subtitle_font, white_color, light_shadow_color, shadow_offset
+            draw_text_with_outline(
+                draw, line, (padding, current_y), 
+                subtitle_font, 'white', 'black', outline_width
             )
-            current_y += int(font_sizes['subtitle'] * 1.2)
+            _, text_height = get_text_dimensions(line, subtitle_font)
+            current_y += int(text_height * 1.2)
         current_y += int(padding * 0.5)
     
     # Дисклеймер внизу
     if disclaimer:
-        disclaimer_lines = wrap_text_canvas(canvas, disclaimer, disclaimer_font, text_max_width)
-        shadow_offset = max(1, font_sizes['disclaimer'] // 35)
+        disclaimer_lines = wrap_text_smart(disclaimer, disclaimer_font, text_max_width)
         
         # Рассчитываем высоту дисклеймера
-        total_disclaimer_height = len(disclaimer_lines) * int(font_sizes['disclaimer'] * 1.2)
-        disclaimer_y = height - padding - total_disclaimer_height + font_sizes['disclaimer']
+        total_disclaimer_height = 0
+        for line in disclaimer_lines:
+            _, text_height = get_text_dimensions(line, disclaimer_font)
+            total_disclaimer_height += int(text_height * 1.2)
+        
+        disclaimer_y = height - padding - total_disclaimer_height
+        outline_width = max(1, font_sizes['disclaimer'] // 40)
         
         for line in disclaimer_lines:
-            draw_text_with_shadow_canvas(
-                canvas, line, padding, disclaimer_y,
-                disclaimer_font, gray_color, light_shadow_color, shadow_offset
+            draw_text_with_outline(
+                draw, line, (padding, disclaimer_y), 
+                disclaimer_font, '#CCCCCC', 'black', outline_width
             )
-            disclaimer_y += int(font_sizes['disclaimer'] * 1.2)
+            _, text_height = get_text_dimensions(line, disclaimer_font)
+            disclaimer_y += int(text_height * 1.2)
     
-    # Получаем изображение
-    image = surface.makeImageSnapshot()
-    
-    # Конвертируем в PNG
-    png_data = image.encodeToData(skia.kPNG)
-    
-    return png_data.data()
+    return background.convert('RGB')
 
 @app.route('/')
 def home():
     """API информация"""
     return jsonify({
         'name': 'Image Text Overlay API',
-        'version': '2.0.0',
+        'version': '2.1.0',
         'status': 'Production Ready',
-        'renderer': 'Skia Canvas',
+        'renderer': 'PIL with Enhanced Unicode Support',
         'features': [
-            'Canvas-рендеринг высокого качества',
-            'Полная поддержка кириллицы и Unicode',
+            'Улучшенная поддержка кириллицы и Unicode',
             'Адаптивное масштабирование шрифтов',
+            'Умная разбивка текста на строки',
+            'Контурный текст для лучшей читаемости',
             'Поддержка любых размеров изображений',
             'Автоматическая корректировка по соотношению сторон'
         ],
@@ -320,21 +356,41 @@ def get_formats():
         }
     })
 
+@app.route('/health')
+def health_check():
+    """Проверка здоровья приложения"""
+    try:
+        # Тестируем создание изображения
+        test_img = Image.new('RGB', (100, 100), 'white')
+        test_font = create_font_unicode(20)
+        
+        return jsonify({
+            'status': 'healthy',
+            'pil_version': Image.__version__ if hasattr(Image, '__version__') else 'unknown',
+            'unicode_test': 'Тест кириллицы: успешно'
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'unhealthy',
+            'error': str(e)
+        }), 500
+
 @app.route('/generate/<format_name>', methods=['POST'])
 def generate_image_endpoint(format_name):
-    """Генерировать изображение с Canvas"""
+    """Генерировать изображение"""
     try:
         # Определяем размеры изображения
         if format_name == 'custom':
-            # Кастомные размеры из параметров запроса
             width = int(request.args.get('width', 800))
             height = int(request.args.get('height', 600))
         elif format_name in FORMATS:
-            # Предустановленные форматы
             width = FORMATS[format_name]['width']
             height = FORMATS[format_name]['height']
         else:
-            return jsonify({'error': 'Неподдерживаемый формат', 'available_formats': list(FORMATS.keys())}), 400
+            return jsonify({
+                'error': 'Неподдерживаемый формат', 
+                'available_formats': list(FORMATS.keys())
+            }), 400
         
         # Ограничения на размеры
         if width < 100 or width > 4000 or height < 100 or height > 4000:
@@ -355,25 +411,25 @@ def generate_image_endpoint(format_name):
         disclaimer = request.form.get('disclaimer', '')
         logo_url = request.form.get('logoUrl', '')
         
-        print(f"Canvas генерация: {width}x{height}")
-        print(f"Тексты: logoText='{logo_text}', title='{title}', subtitle='{subtitle}', disclaimer='{disclaimer}'")
+        print(f"Запрос на генерацию: {width}x{height}")
         
         # Загружаем изображение
         try:
             background_image = Image.open(file.stream)
-            print(f"Оригинальное изображение: {background_image.size}, режим: {background_image.mode}")
+            print(f"Загружено изображение: {background_image.size}, режим: {background_image.mode}")
         except Exception as e:
             return jsonify({'error': f'Ошибка обработки изображения: {str(e)}'}), 400
         
-        # Генерируем изображение с Canvas
-        png_data = generate_image_canvas(
+        # Генерируем изображение
+        result_image = generate_image_adaptive(
             background_image, logo_text, title, subtitle, disclaimer, logo_url, width, height
         )
         
-        print(f"Canvas изображение сгенерировано, размер данных: {len(png_data)} байт")
+        print(f"Изображение сгенерировано: {result_image.size}")
         
-        # Создаем буфер
-        img_buffer = io.BytesIO(png_data)
+        # Сохраняем в буфер
+        img_buffer = io.BytesIO()
+        result_image.save(img_buffer, format='PNG', quality=95, optimize=True)
         img_buffer.seek(0)
         
         return send_file(
@@ -384,7 +440,7 @@ def generate_image_endpoint(format_name):
         )
         
     except Exception as e:
-        print(f"Ошибка Canvas генерации: {e}")
+        print(f"Ошибка генерации: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': f'Ошибка генерации изображения: {str(e)}'}), 500
